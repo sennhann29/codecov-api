@@ -14,6 +14,7 @@ from internal_api.commit.views import CommitsViewSet
 from internal_api.branch.views import BranchViewSet
 from internal_api.repo.views import RepositoryViewSet
 from internal_api.compare.views import CompareViewSet
+from internal_api.critical_paths.views import CriticalPathViewSet
 from internal_api.sessions.views import SessionViewSet
 
 
@@ -57,6 +58,9 @@ repository_artifacts_router.register(r"branches", BranchViewSet, basename="branc
 compare_router = RetrieveUpdateDestroyRouter()
 compare_router.register(r"compare", CompareViewSet, basename="compare")
 
+critical_path_router = RetrieveUpdateDestroyRouter() # change to DefaultRouter
+critical_path_router.register(r"critical-paths", CriticalPathViewSet, basename="critical_paths")
+
 urlpatterns = []
 
 if not settings.IS_ENTERPRISE:
@@ -70,6 +74,7 @@ if not settings.IS_ENTERPRISE:
         path('<str:service>/<str:owner_username>/', include(repository_router.urls)),
         path('<str:service>/<str:owner_username>/<str:repo_name>/', include(repository_artifacts_router.urls)),
         path('<str:service>/<str:owner_username>/<str:repo_name>/', include(compare_router.urls)),
+        path('<str:service>/<str:owner_username>/<str:repo_name>/', include(critical_path_router.urls)),
     ]
 else:
     urlpatterns += [

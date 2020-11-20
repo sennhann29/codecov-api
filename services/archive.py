@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 class MinioEndpoints(Enum):
     chunks = '{version}/repos/{repo_hash}/commits/{commitid}/chunks.txt'
     raw = 'v4/raw/{date}/{repo_hash}/{commit_sha}/{reportid}.txt'
+    critical_path = 'critical_path/{repo_hash}/{commit_sha}.txt'
 
     def get_path(self, **kwaargs):
         return self.value.format(**kwaargs)
@@ -280,3 +281,26 @@ class ReportService(object):
         sessions = commit.report['sessions']
         totals = commit.totals
         return build_report(chunks, files, sessions, totals)
+
+    # returns
+    # {
+    #   "filename": [<critical_lines>]
+    # }
+    def build_critical_path_report_from_commit(self, commit):
+        svc = ArchiveService(commit.repository)
+
+        path = MinioEndpoints.critical_path.get_path(
+            repo_hash=svc.storage_hash,
+            commit_sha=commit.commitid
+        )
+
+        data = svc.read_file(path)
+        lines = data.split("\n")
+
+        result = {}
+        for line in lines:
+            items = line.split(" ")
+            name = items.pop(0)
+            result[name] = items
+
+        return result
