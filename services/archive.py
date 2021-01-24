@@ -282,11 +282,19 @@ class ReportService(object):
         totals = commit.totals
         return build_report(chunks, files, sessions, totals)
 
-    # returns
-    # {
-    #   "filename": [<critical_lines>]
-    # }
     def build_critical_path_report_from_commit(self, commit):
+        """ Returns a dict mapping files to their critical paths
+
+            Please note that since critical path covergae is an experimental
+            feature this function will change frequently and should not be used
+            with outward-facing code
+
+        Args:
+            commit (core.models.Commit): The commit we want to see the report about
+        
+        Returns:
+            { "filename": [c0, c1, ...] }
+        """
         svc = ArchiveService(commit.repository)
 
         path = MinioEndpoints.critical_path.get_path(
@@ -295,7 +303,7 @@ class ReportService(object):
         )
 
         data = svc.read_file(path)
-        lines = data.split("\n")
+        lines = data.strip().split("\n")
 
         result = {}
         for line in lines:

@@ -1,6 +1,6 @@
 import asyncio
 
-from rest_framework import mixins, viewsets
+from rest_framework import mixins, serializers, viewsets
 from rest_framework.response import Response
 from rest_framework.exceptions import APIException
 
@@ -8,29 +8,36 @@ from services.decorators import torngit_safe
 from services.archive import ReportService
 
 from internal_api.compare.serializers import ComparisonSerializer
-from internal_api.mixins import CompareSlugMixin
+from internal_api.mixins import RepoPropertyMixin
 from internal_api.permissions import RepositoryArtifactPermissions
 
 from services.repo_providers import RepoProviderService
 
 from core.models import Commit
 
-class CriticalPathViewSet(CompareSlugMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+from .serializers import (
+    CriticalPathLine,
+    CriticalPathFile,
+    CriticalPathResponse,
+    CriticalPathLineSerializer,
+    CriticalPathFile,
+    CriticalPathResponseSerializer
+)
 
-    # TODO: this is placeholder.. to create cpc report serialzr
-    serializer_class = ComparisonSerializer
+class CriticalPathViewSet(RepoPropertyMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
 
     permission_classes = [RepositoryArtifactPermissions]
     
     # should probably bake query param into route using action decorator for
     # better self-documentation.. eh later
-    @torngit_safe
     def retrieve(self, request, *args, **kwargs):
         if not request.query_params or not request.query_params["sha"]:
             raise APIException("You must include 'sha' query parameter")
 
         sha = request.query_params["sha"]
-        commit = Commit.objects.get(commitid=sha)
+        
+        # We fetch by commitid and repo since there's an index on both of those
+        commit = Commit.objects.get(commitid=sha, repository=self.repo)
         
         report_svc = ReportService()
         response = {}
@@ -38,39 +45,23 @@ class CriticalPathViewSet(CompareSlugMixin, mixins.RetrieveModelMixin, viewsets.
         # Fetch critical paths so we know which files to focus on
         cpc_report = report_svc.build_critical_path_report_from_commit(commit)
 
+        # Note on performance
+        # I'm not sure in practice how many lines we can expect to be critical. Because
+        # of that, and the fact that this is for demo purposes, I'm just going to iterate
+        # through all critical paths until we find that it's not efficient.
+        cpc_files = []
         for critical_file_path in cpc_report.keys():
-            response[critical_file_path] = []
-            
-            # src will contain a list containing each line of the file
-            # will want to do some local caching
-            src = str(
-                asyncio.run(
-                    RepoProviderService().get_adapter(
-                        user=self.request.user,
-                        repo=commit.repository
-                    ).get_source(critical_file_path, sha)
-                )["content"], 'utf-8'
-            ).splitlines()
-
             critical_lines = cpc_report[critical_file_path]
-            for i, txt in enumerate(src):
-                response[critical_file_path].append({
-                    "text": txt,
-                    "is_critical": str(i+1) in critical_lines,
-                    "is_covered": False # (to be updated if True..)
-                })
+            
+            # Gather all lines from this file
+            lines = []
+            for lineno in critical_lines:
+                lines.append(CriticalPathLine(lineno))
 
-        # check coverage report to see which ones are covered
-        # maybe a cleaner way to do this
-        cov_report = report_svc.build_report_from_commit(commit)
-        files = sorted(cov_report.file_reports(), key=lambda x: x.name)
-        for file in files:
-            for line in file.lines:
-                if file.name in response and isinstance(line[1].coverage, int) and line[1].coverage > 0:
-                    response[file.name][line[0]]["is_covered"] = True
+            cpc_files.append(CriticalPathFile(critical_file_path, lines))
+            
+        # Serialize structure
+        cpr = CriticalPathResponse(cpc_files)
+        serializer = CriticalPathResponseSerializer(cpr)
 
-        # do properly with serializers
-        return Response(
-            data=response,
-            status=200
-        )
+        return Response(serializer.data)
