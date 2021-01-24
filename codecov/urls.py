@@ -30,6 +30,7 @@ urlpatterns = [
 
 urlpatterns.append(path(INTERNAL_API_PREFIX, include("internal_api.urls")))
 urlpatterns.append(path("webhooks/", include("webhook_handlers.urls")))
+urlpatterns.append(path("critical_path/", include("critical_path.urls")))
 urlpatterns.append(path("upload/<str:version>", include("upload.urls")))
 # Use regex to make the trailing slash optional
 urlpatterns.append(re_path("^validate/?", include("validate.urls")))
