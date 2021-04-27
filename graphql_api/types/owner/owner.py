@@ -19,3 +19,10 @@ def resolve_repositories(owner, info, filters=None, **kwargs):
     queryset = list_repository_for_owner(current_user, owner, filters)
     ordering = ("-repoid",)
     return queryset_to_connection(queryset, ordering, **kwargs)
+
+
+@owner_bindable.field("yaml")
+def resolve_yaml(owner, info):
+    current_user = info.context["request"].user
+    if owner.is_admin(current_user) or owner.ownerid in current_user.organizations:
+        return owner.yaml
