@@ -1,6 +1,5 @@
 from ariadne import ObjectType
 
-
 from graphql_api.helpers.ariadne import ariadne_load_local_graphql
 from graphql_api.helpers.connection import (
     build_connection_graphql,
@@ -24,5 +23,5 @@ def resolve_repositories(owner, info, filters=None, **kwargs):
 @owner_bindable.field("yaml")
 def resolve_yaml(owner, info):
     current_user = info.context["request"].user
-    if owner.is_admin(current_user) or owner.ownerid in current_user.organizations:
-        return owner.yaml
+    if owner.in_org(current_user):
+        return owner.get_yaml

@@ -2,6 +2,7 @@ from datetime import datetime
 import os
 import uuid
 import logging
+import yaml
 from time import time
 from hashlib import md5
 from enum import Enum
@@ -374,7 +375,16 @@ class Owner(models.Model):
         self.plan_user_count = 5
         self.stripe_subscription_id = None
         self.save()
+    
+    # Is user part of current organization?
+    def in_org(self, user):
+        if(self.is_admin(user) or self.ownerid in user.organizations):
+            return True
 
+    @property
+    def get_yaml(self):
+        if(self.yaml is not None):
+            return yaml.dump(self.yaml)
 
 class Session(models.Model):
     class Meta:
