@@ -3,6 +3,8 @@ type Owner {
   username: String!
   repositories(
     filters: RepositorySetFilters
+    ordering: RepositoryOrdering
+    orderingDirection: OrderingDirection
     first: Int
     after: String
     last: Int
