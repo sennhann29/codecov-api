@@ -80,6 +80,7 @@ class Command(MigrateCommand):
         return lock
 
     def handle(self, *args, **options):
+        log.info("Codecov is running migrations...")
         database = options["database"]
         db_connection = connections[database]
         options["run_syncdb"] = False
@@ -97,4 +98,5 @@ class Command(MigrateCommand):
 
             super().handle(*args, **options)
         finally:
+            log.info("Codecov has finished running migrations.")
             lock.release()
