@@ -64,7 +64,7 @@ class CodecovExporter(SpanExporter):
         # path should be in format $path\/segments\/
         if path[0] == "/":
             path = path[1:]
-        if path[-1] != "/":
+        if len(path) == 0 or path[-1] != "/":
             path = path + "/"
 
         # required but not used at the moment
