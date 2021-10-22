@@ -93,13 +93,18 @@ class Owner(models.Model):
     private_access = models.BooleanField(null=True)
     staff = models.BooleanField(null=True, default=False)
     cache = models.JSONField(null=True)
-    # Really an ENUM in db
-    plan = models.TextField(null=True, default=BASIC_PLAN_NAME)
-    plan_provider = models.TextField(
-        null=True, choices=PlanProviders.choices
+    _plan = models.TextField(
+        db_column="plan", null=True, default=BASIC_PLAN_NAME
+    )  # Really an ENUM in db
+    _plan_provider = models.TextField(
+        db_column="plan_provider", null=True, choices=PlanProviders.choices
     )  # postgres enum containing only "github"
-    plan_user_count = models.SmallIntegerField(null=True, default=5)
-    plan_auto_activate = models.BooleanField(null=True, default=True)
+    _plan_user_count = models.SmallIntegerField(
+        db_column="plan_user_count", null=True, default=5
+    )
+    _plan_auto_activate = models.BooleanField(
+        db_column="plan_auto_activate", null=True, default=True
+    )
     plan_activated_users = ArrayField(models.IntegerField(null=True), null=True)
     did_trial = models.BooleanField(null=True)
     free = models.SmallIntegerField(default=0)
@@ -122,6 +127,38 @@ class Owner(models.Model):
     objects = OwnerQuerySet.as_manager()
 
     repository_set = RepositoryQuerySet.as_manager()
+
+    @property
+    def plan(self):
+        return self._plan
+
+    @plan.setter
+    def plan(self, val):
+        self._plan = val
+    
+    @property
+    def plan_provider(self):
+        return self._plan_provider
+
+    @plan_provider.setter
+    def plan_provider(self, val):
+        self._plan_provider = val
+    
+    @property
+    def plan_user_count(self):
+        return self._plan_user_count
+
+    @plan_user_count.setter
+    def plan_user_count(self, val):
+        self._plan_user_count = val
+
+    @property
+    def plan_auto_activate(self):
+        return self._plan_auto_activate
+
+    @plan_auto_activate.setter
+    def plan_auto_activate(self, val):
+        self._plan_auto_activate = val
 
     def __str__(self):
         return f"Owner<{self.service}/{self.username}>"
