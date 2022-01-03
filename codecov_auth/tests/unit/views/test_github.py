@@ -1,35 +1,42 @@
 from datetime import datetime
+
+from django.http.cookie import SimpleCookie
 from django.urls import reverse
 from django.utils import timezone
 from shared.torngit import Github
 from shared.torngit.exceptions import TorngitClientGeneralError
+
 from codecov_auth.helpers import decode_token_from_cookie
+from codecov_auth.models import Owner, Session
 from codecov_auth.tests.factories import OwnerFactory
-from codecov_auth.models import Session
-from django.http.cookie import SimpleCookie
-
-from codecov_auth.models import Owner
 
 
-def test_get_github_redirect(client):
+def _get_state_from_redis(mock_redis):
+    key_redis = mock_redis.keys("*")[0].decode()
+    return key_redis.replace("oauth-state-", "")
+
+
+def test_get_github_redirect(client, mock_redis):
     url = reverse("github-login")
     res = client.get(url)
+    state = _get_state_from_redis(mock_redis)
     assert res.status_code == 302
     assert (
         res.url
-        == "https://github.com/login/oauth/authorize?response_type=code&scope=user%3Aemail%2Cread%3Aorg%2Crepo%3Astatus%2Cwrite%3Arepo_hook&client_id=3d44be0e772666136a13"
+        == f"https://github.com/login/oauth/authorize?response_type=code&scope=user%3Aemail%2Cread%3Aorg%2Crepo%3Astatus%2Cwrite%3Arepo_hook&client_id=3d44be0e772666136a13&state={state}"
     )
 
 
-def test_get_github_redirect_with_ghpr_cookie(client, settings):
+def test_get_github_redirect_with_ghpr_cookie(client, mock_redis, settings):
     settings.COOKIES_DOMAIN = ".simple.site"
     client.cookies = SimpleCookie({"ghpr": "true"})
     url = reverse("github-login")
     res = client.get(url)
+    state = _get_state_from_redis(mock_redis)
     assert res.status_code == 302
     assert (
         res.url
-        == "https://github.com/login/oauth/authorize?response_type=code&scope=user%3Aemail%2Cread%3Aorg%2Crepo%3Astatus%2Cwrite%3Arepo_hook%2Crepo&client_id=3d44be0e772666136a13"
+        == f"https://github.com/login/oauth/authorize?response_type=code&scope=user%3Aemail%2Cread%3Aorg%2Crepo%3Astatus%2Cwrite%3Arepo_hook%2Crepo&client_id=3d44be0e772666136a13&state={state}"
     )
     assert "ghpr" in res.cookies
     ghpr_cooke = res.cookies["ghpr"]
@@ -37,14 +44,15 @@ def test_get_github_redirect_with_ghpr_cookie(client, settings):
     assert ghpr_cooke.get("domain") == ".simple.site"
 
 
-def test_get_github_redirect_with_private_url(client, settings):
+def test_get_github_redirect_with_private_url(client, mock_redis, settings):
     settings.COOKIES_DOMAIN = ".simple.site"
     url = reverse("github-login")
     res = client.get(url, {"private": "true"})
+    state = _get_state_from_redis(mock_redis)
     assert res.status_code == 302
     assert (
         res.url
-        == "https://github.com/login/oauth/authorize?response_type=code&scope=user%3Aemail%2Cread%3Aorg%2Crepo%3Astatus%2Cwrite%3Arepo_hook%2Crepo&client_id=3d44be0e772666136a13"
+        == f"https://github.com/login/oauth/authorize?response_type=code&scope=user%3Aemail%2Cread%3Aorg%2Crepo%3Astatus%2Cwrite%3Arepo_hook%2Crepo&client_id=3d44be0e772666136a13&state={state}"
     )
     assert "ghpr" in res.cookies
     ghpr_cooke = res.cookies["ghpr"]
@@ -118,8 +126,10 @@ def test_get_github_already_with_code(client, mocker, db, mock_redis, settings):
             as_tuple=mocker.MagicMock(return_value=("a", "b"))
         ),
     )
+
     url = reverse("github-login")
-    res = client.get(url, {"code": "aaaaaaa"})
+    mock_redis.setex("oauth-state-abc", 300, "http://localhost:3000/gh")
+    res = client.get(url, {"code": "aaaaaaa", "state": "abc"})
     assert res.status_code == 302
     assert "github-token" in res.cookies
     assert "github-username" in res.cookies
@@ -146,7 +156,7 @@ def test_get_github_already_with_code(client, mocker, db, mock_redis, settings):
     assert owner.root_parent_service_id is None
     assert not owner.staff
     assert owner.cache is None
-    assert owner.plan == "users-free"
+    assert owner.plan == "users-basic"
     assert owner.plan_provider is None
     assert owner.plan_user_count is 5
     assert owner.plan_auto_activate is True
@@ -170,7 +180,7 @@ def test_get_github_already_with_code(client, mocker, db, mock_redis, settings):
     org = Owner.objects.get(ownerid=owner.organizations[0])
     assert org.service_id == "8226205"
     assert org.service == "github"
-    assert res.url == "/gh"
+    assert res.url == "http://localhost:3000/gh"
 
 
 def test_get_github_already_with_code_github_error(
@@ -181,13 +191,23 @@ def test_get_github_already_with_code_github_error(
     async def helper_func(*args, **kwargs):
         raise TorngitClientGeneralError(403, "response", "message")
 
+    mock_redis.setex("oauth-state-abc", 300, "http://localhost:3000/gh")
+
     mocker.patch.object(Github, "get_authenticated_user", side_effect=helper_func)
     url = reverse("github-login")
-    res = client.get(url, {"code": "aaaaaaa"})
+    res = client.get(url, {"code": "aaaaaaa", "state": "abc"})
     assert res.status_code == 302
     assert "github-token" not in res.cookies
     assert "github-username" not in res.cookies
     assert res.url == "/"
+
+
+def test_state_not_known(client, mocker, db, mock_redis, settings):
+    url = reverse("github-login")
+    res = client.get(url, {"code": "aaaaaaa", "state": "doesnt exist"})
+    assert res.status_code == 400
+    assert "github-token" not in res.cookies
+    assert "github-username" not in res.cookies
 
 
 def test_get_github_already_with_code_with_email(
@@ -226,8 +246,9 @@ def test_get_github_already_with_code_with_email(
             as_tuple=mocker.MagicMock(return_value=("a", "b"))
         ),
     )
+    mock_redis.setex("oauth-state-abc", 300, "http://localhost:3000/gh")
     url = reverse("github-login")
-    res = client.get(url, {"code": "aaaaaaa"})
+    res = client.get(url, {"code": "aaaaaaa", "state": "abc"})
     assert res.status_code == 302
     assert "github-token" in res.cookies
     assert "github-username" in res.cookies
@@ -243,7 +264,7 @@ def test_get_github_already_with_code_with_email(
     assert owner.service_id == "44376991"
     assert owner.email == "thiago@codecov.io"
     assert owner.private_access is True
-    assert res.url == "/gh"
+    assert res.url == "http://localhost:3000/gh"
 
 
 def test_get_github_already_with_code_is_student(
@@ -281,8 +302,9 @@ def test_get_github_already_with_code_is_student(
             as_tuple=mocker.MagicMock(return_value=("a", "b"))
         ),
     )
+    mock_redis.setex("oauth-state-abc", 300, "http://localhost:3000/gh")
     url = reverse("github-login")
-    res = client.get(url, {"code": "aaaaaaa"})
+    res = client.get(url, {"code": "aaaaaaa", "state": "abc"})
     assert res.status_code == 302
     assert "github-token" in res.cookies
     assert "github-username" in res.cookies
@@ -299,7 +321,7 @@ def test_get_github_already_with_code_is_student(
     assert owner.email is None
     assert owner.service_id == "44376991"
     assert owner.private_access is True
-    assert res.url == "/gh"
+    assert res.url == "http://localhost:3000/gh"
     assert owner.student is True
 
 
@@ -345,7 +367,8 @@ def test_get_github_already_owner_already_exist(
         ),
     )
     url = reverse("github-login")
-    res = client.get(url, {"code": "aaaaaaa"})
+    mock_redis.setex("oauth-state-abc", 300, "http://localhost:3000/gh")
+    res = client.get(url, {"code": "aaaaaaa", "state": "abc"})
     assert res.status_code == 302
     assert "github-token" in res.cookies
     assert "github-username" in res.cookies
@@ -362,4 +385,4 @@ def test_get_github_already_owner_already_exist(
     assert owner.bot is None
     assert owner.service_id == "44376991"
     assert owner.private_access is True
-    assert res.url == "/gh"
+    assert res.url == "http://localhost:3000/gh"

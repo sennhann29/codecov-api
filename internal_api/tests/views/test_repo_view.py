@@ -1,21 +1,20 @@
-import pytest
 from datetime import datetime
-from django.utils import timezone
-
 from unittest.mock import patch
 
+import pytest
+from django.utils import timezone
 from rest_framework.reverse import reverse
 from shared.torngit.exceptions import TorngitClientGeneralError
 
 from codecov.tests.base_test import InternalAPITest
 from codecov_auth.tests.factories import OwnerFactory
+from core.models import Repository
 from core.tests.factories import (
-    RepositoryFactory,
+    BranchFactory,
     CommitFactory,
     PullFactory,
-    BranchFactory,
+    RepositoryFactory,
 )
-from core.models import Repository
 from internal_api.commit.serializers import CommitTotalsSerializer
 from internal_api.tests.test_utils import GetAdminProviderAdapter
 
@@ -35,11 +34,6 @@ class RepositoryViewSetTestSuite(InternalAPITest):
                 "repo_name": self.repo.name,
             }
         return self.client.get(reverse("repos-detail", kwargs=kwargs), data=data)
-
-    def _get_stats(self, kwargs={}, data={}):
-        if kwargs == {}:
-            kwargs = {"service": self.org.service, "owner_username": self.org.username}
-        return self.client.get(reverse("repos-statistics", kwargs=kwargs), data=data)
 
     def _update(self, kwargs={}, data={}):
         if kwargs == {}:
@@ -565,57 +559,6 @@ class TestRepositoryViewSetExtraActions(RepositoryViewSetTestSuite):
 
         self.client.force_login(user=self.user)
 
-    def test_stats_for_all_repos(self):
-        response = self._get_stats()
-        stats = {
-            "repos_count": 2,
-            "sum_lines": self.repo1Commit2.totals["n"] + self.repo2Commit2.totals["n"],
-            "sum_hits": self.repo1Commit2.totals["h"] + self.repo2Commit2.totals["h"],
-            "sum_partials": self.repo1Commit2.totals["p"]
-            + self.repo2Commit2.totals["p"],
-            "sum_misses": self.repo1Commit2.totals["m"] + self.repo2Commit2.totals["m"],
-            "weighted_coverage": 25.0,
-            "average_complexity": 0,
-            "weighted_coverage_change": -41.6666666666667,
-        }
-
-        assert response.data == stats
-
-    def test_stats_for_single_repos(self):
-        response = self._get_stats(data={"names": ["A"]})
-        stats = {
-            "repos_count": 1,
-            "sum_lines": self.repo1Commit2.totals["n"],
-            "sum_hits": self.repo1Commit2.totals["h"],
-            "sum_partials": self.repo1Commit2.totals["p"],
-            "sum_misses": self.repo1Commit2.totals["m"],
-            "weighted_coverage": 0.0,
-            "average_complexity": 0,
-            "weighted_coverage_change": -100.0,
-        }
-
-        assert response.data == stats
-
-    def test_stats_with_invalid_datetime_crashes(self):
-        with pytest.raises(ValueError):
-            self._get_stats(data={"before_date": "A"})
-
-    def test_stats_with_datetime_doesnt_crash(self):
-        response = self._get_stats(data={"before_date": self.repo1Commit2.timestamp})
-        stats = {
-            "repos_count": 2,
-            "sum_lines": self.repo1Commit2.totals["n"] + self.repo2Commit2.totals["n"],
-            "sum_hits": self.repo1Commit2.totals["h"] + self.repo2Commit2.totals["h"],
-            "sum_partials": self.repo1Commit2.totals["p"]
-            + self.repo2Commit2.totals["p"],
-            "sum_misses": self.repo1Commit2.totals["m"] + self.repo2Commit2.totals["m"],
-            "weighted_coverage": 25.0,
-            "average_complexity": 0,
-            "weighted_coverage_change": -41.6666666666667,
-        }
-
-        assert response.data == stats
-
 
 @patch("internal_api.repo.repository_accessors.RepoAccessors.get_repo_permissions")
 class TestRepositoryViewSetDetailActions(RepositoryViewSetTestSuite):
@@ -826,9 +769,7 @@ class TestRepositoryViewSetDetailActions(RepositoryViewSetTestSuite):
         )
 
         PullFactory(
-            pullid=2,
-            repository=self.repo,
-            author=self.repo.author,
+            pullid=2, repository=self.repo, author=self.repo.author,
         )
 
         BranchFactory(authors=[self.org.ownerid], repository=self.repo)
@@ -1079,7 +1020,7 @@ class TestRepositoryViewSetDetailActions(RepositoryViewSetTestSuite):
         message = "No can do, buddy"
         mocked_get_permissions.return_value = True, True
         create_webhook_mock.side_effect = TorngitClientGeneralError(
-            code, response=None, message=message
+            code, response_data=None, message=message
         )
 
         response = self._reset_webhook()
@@ -1087,7 +1028,6 @@ class TestRepositoryViewSetDetailActions(RepositoryViewSetTestSuite):
         assert response.status_code == code
         assert response.data == {"detail": message}
 
-    @patch("services.archive.ArchiveService.create_root_storage", lambda _: None)
     @patch("services.archive.ArchiveService.read_chunks", lambda obj, _: "")
     def test_retrieve_returns_latest_commit_data(self, mocked_get_permissions):
         self.maxDiff = None
@@ -1164,7 +1104,6 @@ class TestRepositoryViewSetDetailActions(RepositoryViewSetTestSuite):
             ],
         )
 
-    @patch("services.archive.ArchiveService.create_root_storage", lambda _: None)
     @patch("services.archive.ArchiveService.read_chunks", lambda obj, _: "")
     def test_retrieve_returns_latest_commit_of_default_branch_if_branch_not_specified(
         self, mocked_get_permissions
@@ -1179,7 +1118,6 @@ class TestRepositoryViewSetDetailActions(RepositoryViewSetTestSuite):
         assert response.data["latest_commit"]["commitid"] == commit.commitid
         assert response.data["latest_commit"]["commitid"] != more_recent_commit.commitid
 
-    @patch("services.archive.ArchiveService.create_root_storage", lambda _: None)
     @patch("services.archive.ArchiveService.read_chunks", lambda obj, _: "")
     def test_retrieve_accepts_branch_query_param_to_specify_latest_commit(
         self, mocked_get_permissions
@@ -1194,7 +1132,6 @@ class TestRepositoryViewSetDetailActions(RepositoryViewSetTestSuite):
         assert response.data["latest_commit"]["commitid"] == commit.commitid
         assert response.data["latest_commit"]["commitid"] != more_recent_commit.commitid
 
-    @patch("services.archive.ArchiveService.create_root_storage", lambda _: None)
     @patch("services.archive.ArchiveService.read_chunks", lambda obj, _: "")
     def test_latest_commit_is_none_if_dne(self, mocked_get_permissions):
         mocked_get_permissions.return_value = True, True
@@ -1227,7 +1164,7 @@ class TestRepositoryViewSetDetailActions(RepositoryViewSetTestSuite):
     def test_permissions_check_handles_torngit_error(self, mocked_get_permissions):
         err_code, err_message = 403, "yo, no."
         mocked_get_permissions.side_effect = TorngitClientGeneralError(
-            err_code, message=err_message, response=None
+            err_code, message=err_message, response_data=None
         )
         response = self._retrieve()
         assert response.status_code == err_code
@@ -1240,7 +1177,7 @@ class TestRepositoryViewSetDetailActions(RepositoryViewSetTestSuite):
         mocked_get_perms.return_value = True, True
         err_code, err_message = 403, "yo, no."
         mocked_get_details.side_effect = TorngitClientGeneralError(
-            status_code=err_code, message=err_message, response=None
+            status_code=err_code, message=err_message, response_data=None
         )
         response = self._retrieve()
         assert response.status_code == err_code
@@ -1278,7 +1215,7 @@ class TestRepositoryViewSetDetailActions(RepositoryViewSetTestSuite):
         mocked_get_permissions.return_value = True, True
         mocked_get_repo_details.return_value = None
         mocked_fetch_and_create.side_effect = TorngitClientGeneralError(
-            403, response=None, message="Forbidden"
+            403, response_data=None, message="Forbidden"
         )
 
         response = self._retrieve(

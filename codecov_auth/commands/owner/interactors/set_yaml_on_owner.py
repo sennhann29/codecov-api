@@ -1,18 +1,19 @@
-from asgiref.sync import sync_to_async
 import html
-import yaml
 
-from codecov_auth.models import Owner
-from graphql_api.actions.owner import current_user_part_of_org
+import yaml
+from asgiref.sync import sync_to_async
+from shared.validation.exceptions import InvalidYamlException
+from shared.yaml.validation import validate_yaml
+
 from codecov.commands.base import BaseInteractor
 from codecov.commands.exceptions import (
-    Unauthenticated,
-    ValidationError,
-    Unauthorized,
     NotFound,
+    Unauthenticated,
+    Unauthorized,
+    ValidationError,
 )
-from shared.validation.yaml import validate_yaml
-from shared.validation.exceptions import InvalidYamlException
+from codecov_auth.helpers import current_user_part_of_org
+from codecov_auth.models import Owner
 
 
 class SetYamlOnOwnerInteractor(BaseInteractor):
@@ -36,7 +37,7 @@ class SetYamlOnOwnerInteractor(BaseInteractor):
         if not yaml_dict:
             return None
         try:
-            return validate_yaml(yaml_dict)
+            return validate_yaml(yaml_dict, show_secrets_for=None)
         except InvalidYamlException as e:
             message = f"Error at {str(e.error_location)}: {e.error_message}"
             raise ValidationError(message)

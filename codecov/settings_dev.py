@@ -1,9 +1,9 @@
-from .settings_base import *
 import logging
 
+from .settings_base import *
 
 DEBUG = True
-ALLOWED_HOSTS = ["localhost"]
+ALLOWED_HOSTS = get_config("setup", "api_allowed_hosts", default=["localhost"])
 
 
 WEBHOOK_URL = ""  # NGROK TUNNEL HERE
@@ -27,6 +27,7 @@ GITHUB_BOT_KEY = "testjltl8ckrcduovemrhp7upoqzs2sovquv9fzk"
 
 BITBUCKET_CLIENT_ID = "testqmo19ebdkseoby"
 BITBUCKET_CLIENT_SECRET = "testfi8hzehvz453qj8mhv21ca4rf83f"
+BITBUCKET_REDIRECT_URI = "localhost:8000"
 
 GITLAB_CLIENT_ID = "testq117krewaffvh4y2ktl1cpof8ufldd397vygenzuy24wb220rqg83cdaps4w"
 GITLAB_CLIENT_SECRET = (
@@ -34,7 +35,35 @@ GITLAB_CLIENT_SECRET = (
 )
 
 
-CODECOV_DASHBOARD_URL = "http://localhost:9000"
+CODECOV_DASHBOARD_URL = "http://localhost:3000"
+
+CORS_ALLOWED_ORIGINS = [
+    CODECOV_DASHBOARD_URL,
+    "http://localhost",
+    "http://localhost:9000",
+]
 
 COOKIES_DOMAIN = "localhost"
 SESSION_COOKIE_DOMAIN = "localhost"
+
+GRAPHQL_PLAYGROUND = True
+
+LOGGING = {
+    "version": 1,
+    "filters": {"require_debug_true": {"()": "django.utils.log.RequireDebugTrue",}},
+    "formatters": {"console": {"format": "%(name)-12s %(levelname)-8s %(message)s"},},
+    "handlers": {
+        "console": {
+            "level": "DEBUG",
+            "filters": ["require_debug_true"],
+            "formatter": "console",
+            "class": "logging.StreamHandler",
+        }
+    },
+    "loggers": {
+        # 'django.db.backends': {
+        #     'level': 'DEBUG',
+        #     'handlers': ['console'],
+        # }
+    },
+}

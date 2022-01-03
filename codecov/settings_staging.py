@@ -1,8 +1,9 @@
-from .settings_base import *
-import sentry_sdk
-from sentry_sdk.integrations.django import DjangoIntegration
 import os
 
+import sentry_sdk
+from sentry_sdk.integrations.django import DjangoIntegration
+
+from .settings_base import *
 
 DEBUG = False
 THIS_POD_IP = os.environ.get("THIS_POD_IP")
@@ -24,7 +25,12 @@ STRIPE_PLAN_IDS = {
     "users-pr-inappm": "plan_H6P3KZXwmAbqPS",
     "users-pr-inappy": "plan_H6P16wij3lUuxg",
 }
-INSTALLED_APPS += ["ddtrace.contrib.django"]
+elastic_apm_enabled = bool(os.environ.get("ELASTIC_APM_ENABLED"))
+if elastic_apm_enabled:
+    INSTALLED_APPS += ["elasticapm.contrib.django"]
+    MIDDLEWARE += ["elasticapm.contrib.django.middleware.TracingMiddleware"]
+else:
+    INSTALLED_APPS += ["ddtrace.contrib.django"]
 
 sentry_sdk.init(
     dsn=os.environ.get("SERVICES__SENTRY__SERVER_DSN", None),
@@ -53,6 +59,13 @@ CORS_ALLOWED_ORIGINS = [
     CODECOV_DASHBOARD_URL,
     "https://gazebo.netlify.app",
     "https://gazebo-staging.netlify.app",
+    "http://localhost:3000",
 ]
 
 DATA_UPLOAD_MAX_MEMORY_SIZE = 15000000
+
+# Same site is set to none on Staging as we want to be able to call the API
+# From Netlify preview deploy
+COOKIE_SAME_SITE = "None"
+
+GRAPHQL_PLAYGROUND = True

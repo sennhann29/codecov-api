@@ -1,0 +1,10 @@
+type File {
+    content: String
+    coverage: [CoverageAnnotation]
+    totals: CoverageTotals
+}
+
+type CoverageAnnotation {
+    line: Int
+    coverage: CoverageLine
+}

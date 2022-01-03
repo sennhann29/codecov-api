@@ -1,30 +1,28 @@
-from datetime import datetime
+import binascii
+import logging
 import os
 import uuid
-import logging
-from time import time
-from hashlib import md5
+from datetime import datetime
 from enum import Enum
+from hashlib import md5
 
+from django.contrib.postgres.fields import ArrayField, CITextField
 from django.db import models
-from core.models import Repository, DateTimeWithoutTZField
-from utils.config import get_config
-from django.contrib.postgres.fields import CITextField, ArrayField
 
-from .managers import OwnerQuerySet
-from core.managers import RepositoryQuerySet
-from core.models import DateTimeWithoutTZField
-
+from billing.constants import BASIC_PLAN_NAME, USER_PLAN_REPRESENTATIONS
+from codecov.models import BaseCodecovModel
 from codecov_auth.constants import (
     AVATAR_GITHUB_BASE_URL,
+    AVATARIO_BASE_URL,
     BITBUCKET_BASE_URL,
     GRAVATAR_BASE_URL,
-    AVATARIO_BASE_URL,
-    USER_PLAN_REPRESENTATIONS,
-    FREE_PLAN_NAME,
 )
-
 from codecov_auth.helpers import get_gitlab_url
+from core.managers import RepositoryQuerySet
+from core.models import DateTimeWithoutTZField, Repository
+from utils.config import get_config
+
+from .managers import OwnerQuerySet
 
 # Large number to represent Infinity as float('int') isnt JSON serializable
 INFINITY = 99999999
@@ -79,6 +77,7 @@ class Owner(models.Model):
         unique=True, null=True
     )  # No actual unique constraint on this in the DB
     email = models.TextField(null=True)
+    business_email = models.TextField(null=True)
     name = models.TextField(null=True)
     oauth_token = models.TextField(null=True)
     stripe_customer_id = models.TextField(null=True)
@@ -94,7 +93,7 @@ class Owner(models.Model):
     private_access = models.BooleanField(null=True)
     staff = models.BooleanField(null=True, default=False)
     cache = models.JSONField(null=True)
-    plan = models.TextField(null=True, default=FREE_PLAN_NAME)  # Really an ENUM in db
+    plan = models.TextField(null=True, default=BASIC_PLAN_NAME)  # Really an ENUM in db
     plan_provider = models.TextField(
         null=True, choices=PlanProviders.choices
     )  # postgres enum containing only "github"
@@ -117,14 +116,22 @@ class Owner(models.Model):
     student = models.BooleanField(default=False)
     student_created_at = DateTimeWithoutTZField(null=True)
     student_updated_at = DateTimeWithoutTZField(null=True)
+    onboarding_completed = models.BooleanField(default=False)
 
     objects = OwnerQuerySet.as_manager()
 
     repository_set = RepositoryQuerySet.as_manager()
 
+    def __str__(self):
+        return f"Owner<{self.service}/{self.username}>"
+
     def save(self, *args, **kwargs):
         self.updatestamp = datetime.now()
         super().save(*args, **kwargs)
+
+    @property
+    def has_yaml(self):
+        return self.yaml is not None
 
     @property
     def has_legacy_plan(self):
@@ -383,11 +390,34 @@ class Owner(models.Model):
     def set_free_plan(self):
         log.info(f"Setting plan to users-free for owner {self.ownerid}")
         self.plan = "users-free"
-        self.plan_auto_activate = True
         self.plan_activated_users = None
         self.plan_user_count = 5
         self.stripe_subscription_id = None
         self.save()
+
+
+class OwnerProfile(BaseCodecovModel):
+    class ProjectType(models.TextChoices):
+        PERSONAL = "PERSONAL"
+        YOUR_ORG = "YOUR_ORG"
+        OPEN_SOURCE = "OPEN_SOURCE"
+        EDUCATIONAL = "EDUCATIONAL"
+
+    class Goal(models.TextChoices):
+        STARTING_WITH_TESTS = "STARTING_WITH_TESTS"
+        IMPROVE_COVERAGE = "IMPROVE_COVERAGE"
+        MAINTAIN_COVERAGE = "MAINTAIN_COVERAGE"
+        TEAM_REQUIREMENTS = "TEAM_REQUIREMENTS"
+        OTHER = "OTHER"
+
+    owner = models.OneToOneField(
+        Owner, on_delete=models.CASCADE, unique=True, related_name="profile"
+    )
+    type_projects = ArrayField(
+        models.TextField(choices=ProjectType.choices), default=list
+    )
+    goals = ArrayField(models.TextField(choices=Goal.choices), default=list)
+    other_goal = models.TextField(null=True)
 
 
 class Session(models.Model):
@@ -407,3 +437,25 @@ class Session(models.Model):
     owner = models.ForeignKey(Owner, db_column="ownerid", on_delete=models.CASCADE)
     lastseen = models.DateTimeField(null=True)
     type = models.TextField(choices=SessionType.choices)  # Really an ENUM in db
+
+
+def _generate_key():
+    return binascii.hexlify(os.urandom(20)).decode()
+
+
+class RepositoryToken(BaseCodecovModel):
+    repository = models.ForeignKey(
+        "core.Repository",
+        db_column="repoid",
+        on_delete=models.CASCADE,
+        related_name="tokens",
+    )
+    token_type = models.CharField(max_length=50)
+    valid_until = models.DateTimeField(blank=True, null=True)
+    key = models.CharField(
+        max_length=40, unique=True, editable=False, default=_generate_key,
+    )
+
+    @classmethod
+    def generate_key(cls):
+        return _generate_key()

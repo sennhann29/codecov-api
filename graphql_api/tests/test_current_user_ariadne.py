@@ -1,5 +1,6 @@
-from django.test import TransactionTestCase
 from unittest.mock import patch
+
+from django.test import TransactionTestCase
 
 from codecov_auth.tests.factories import OwnerFactory
 from core.tests.factories import RepositoryFactory
@@ -34,9 +35,14 @@ class ArianeTestCase(GraphQLTestHelper, TransactionTestCase):
                 "user": {
                     "username": self.user.username,
                     "avatarUrl": self.user.avatar_url,
-                }
+                },
             }
         }
+
+    def test_when_tracking_metadata(self):
+        query = "{ me { trackingMetadata { ownerid } } }"
+        data = self.gql_request(query, user=self.user)
+        assert data == {"me": {"trackingMetadata": {"ownerid": self.user.ownerid,},}}
 
     def test_fetching_viewable_repositories(self):
         org_1 = OwnerFactory()
@@ -239,6 +245,23 @@ class ArianeTestCase(GraphQLTestHelper, TransactionTestCase):
         repos = paginate_connection(data["me"]["viewableRepositories"])
         assert repos == [{"name": "a"}]
 
+    def test_fetching_viewable_repositories_with_repo_names_search(self):
+        query = """{
+            me {
+                viewableRepositories (filters: { repoNames: ["a", "b"] }) {
+                    edges {
+                        node {
+                            name
+                        }
+                    }
+                }
+            }
+        }
+        """
+        data = self.gql_request(query, user=self.user)
+        repos = paginate_connection(data["me"]["viewableRepositories"])
+        assert repos == [{"name": "a"}, {"name": "b"}]
+
     def test_fetching_my_orgs(self):
         query = """{
             me {
@@ -275,6 +298,7 @@ class ArianeTestCase(GraphQLTestHelper, TransactionTestCase):
         """
         data = self.gql_request(query, user=self.user)
         orgs = paginate_connection(data["me"]["myOrganizations"])
+
         assert orgs == [
             {"username": "spotify"},
         ]
@@ -295,10 +319,10 @@ class ArianeTestCase(GraphQLTestHelper, TransactionTestCase):
             == "UnauthenticatedError"
         )
 
-    @patch("graphql_api.actions.sync.RefreshService.is_refreshing")
-    @patch("graphql_api.actions.sync.RefreshService.trigger_refresh")
-    def test_sync_repo(self, mocked_trigger_refresh, mock_is_refreshing):
-        mock_is_refreshing.return_value = False
+    @patch("codecov_auth.commands.owner.owner.OwnerCommands.is_syncing")
+    @patch("codecov_auth.commands.owner.owner.OwnerCommands.trigger_sync")
+    def test_sync_repo(self, mock_trigger_refresh, mock_is_refreshing):
+        mock_is_refreshing.return_value = True
         query = """{
             me {
                 isSyncingWithGitProvider
@@ -306,7 +330,7 @@ class ArianeTestCase(GraphQLTestHelper, TransactionTestCase):
         }
         """
         data = self.gql_request(query, user=self.user)
-        assert data["me"]["isSyncingWithGitProvider"] == False
+        assert data["me"]["isSyncingWithGitProvider"] == True
         mutation = """
             mutation {
               syncWithGitProvider {
@@ -318,4 +342,4 @@ class ArianeTestCase(GraphQLTestHelper, TransactionTestCase):
         """
         mutation_data = self.gql_request(mutation, user=self.user)
         assert mutation_data["syncWithGitProvider"]["error"] is None
-        mocked_trigger_refresh.assert_called()
+        mock_trigger_refresh.assert_called()

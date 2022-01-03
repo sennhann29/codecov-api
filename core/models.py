@@ -1,11 +1,13 @@
-from datetime import datetime
-import uuid
-import string
 import random
+import string
+import uuid
+from datetime import datetime
 
+from django.contrib.postgres.fields import ArrayField, CITextField
 from django.db import models
-from django.contrib.postgres.fields import CITextField, ArrayField
 from django.utils.functional import cached_property
+
+from services.archive import ReportService
 
 from .encoders import ReportJSONEncoder
 from .managers import RepositoryQuerySet
@@ -55,9 +57,7 @@ class Repository(models.Model):
     repoid = models.AutoField(primary_key=True)
     name = CITextField()
     author = models.ForeignKey(
-        "codecov_auth.Owner",
-        db_column="ownerid",
-        on_delete=models.CASCADE,
+        "codecov_auth.Owner", db_column="ownerid", on_delete=models.CASCADE,
     )
     service_id = models.TextField()
     private = models.BooleanField()
@@ -99,8 +99,12 @@ class Repository(models.Model):
                 fields=["author", "service_id"], name="repos_service_ids"
             ),
         ]
+        verbose_name_plural = "Repositories"
 
     objects = RepositoryQuerySet.as_manager()
+
+    def __str__(self):
+        return f"Repo<{self.author}/{self.name}>"
 
     @property
     def service(self):
@@ -199,6 +203,16 @@ class Commit(models.Model):
             [commit_id],
         )
 
+    @cached_property
+    def commitreport(self):
+        reports = list(self.reports.all())
+        return reports[0] if reports else None
+
+    @cached_property
+    def full_report(self):
+        report_service = ReportService()
+        return report_service.build_report_from_commit(self)
+
     class Meta:
         db_table = "commits"
         constraints = [
@@ -232,7 +246,8 @@ class Pull(models.Model):
         on_delete=models.CASCADE,
         related_name="pull_requests",
     )
-    pullid = models.IntegerField(primary_key=True)
+    id = models.BigAutoField(primary_key=True)
+    pullid = models.IntegerField()
     issueid = models.IntegerField(null=True)
     state = models.TextField(
         choices=PullStates.choices, default=PullStates.OPEN.value

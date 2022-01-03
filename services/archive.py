@@ -1,19 +1,17 @@
 import logging
-
-from uuid import uuid4
-from django.conf import settings
-from enum import Enum
-from minio import Minio
-from shared.reports.resources import Report
-from shared.helpers.flag import Flag
-
-from django.utils import timezone
-from datetime import datetime
-from hashlib import md5
 from base64 import b16encode
+from enum import Enum
+from hashlib import md5
+from uuid import uuid4
 
-from utils.config import get_config
+from django.conf import settings
+from django.utils import timezone
+from minio import Minio
+from shared.helpers.flag import Flag
+from shared.reports.resources import Report
+
 from services.storage import StorageService
+from utils.config import get_config
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +19,9 @@ log = logging.getLogger(__name__)
 class MinioEndpoints(Enum):
     chunks = "{version}/repos/{repo_hash}/commits/{commitid}/chunks.txt"
     raw = "v4/raw/{date}/{repo_hash}/{commit_sha}/{reportid}.txt"
+    profiling_upload = (
+        "{version}/repos/{repo_hash}/profilinguploads/{profiling_version}/{location}"
+    )
 
     def get_path(self, **kwaargs):
         return self.value.format(**kwaargs)
@@ -96,12 +97,6 @@ class ArchiveService(object):
 
         self.storage = StorageService()
         self.storage_hash = self.get_archive_hash(repository)
-        # create storage based on the root, this will throw acceptable
-        # exceptions if the bucket exists. ResponseError if it doesn't.
-        self.create_root_storage()
-
-    def create_root_storage(self):
-        self.storage.create_root_storage(self.root, self.region)
 
     """
     Accessor for underlying StorageService. You typically shouldn't need
@@ -242,6 +237,9 @@ class ArchiveService(object):
         path = "v4/repos/{}/commits/{}/chunks.txt".format(self.storage_hash, commit_sha)
 
         self.delete_file(path)
+
+    def create_presigned_put(self, path):
+        return self.storage.create_presigned_put(self.root, path, self.ttl)
 
     def create_raw_upload_presigned_put(
         self, commit_sha, repo_hash=None, filename=None, expires=None

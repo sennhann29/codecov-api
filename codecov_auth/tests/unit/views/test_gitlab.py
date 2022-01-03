@@ -4,12 +4,16 @@ from django.urls import reverse
 from shared.torngit import Gitlab
 from shared.torngit.exceptions import TorngitClientGeneralError
 
-
 from codecov_auth.helpers import decode_token_from_cookie
 from codecov_auth.models import Session
 
 
-def test_get_gitlab_redirect(client, settings, mocker):
+def _get_state_from_redis(mock_redis):
+    key_redis = mock_redis.keys("*")[0].decode()
+    return key_redis.replace("oauth-state-", "")
+
+
+def test_get_gitlab_redirect(client, settings, mock_redis, mocker):
     mocker.patch(
         "codecov_auth.views.gitlab.uuid4",
         return_value=UUID("fbdf86c6c8d64ed1b814e80b33df85c9"),
@@ -20,12 +24,14 @@ def test_get_gitlab_redirect(client, settings, mocker):
     settings.GITLAB_CLIENT_SECRET = (
         "testi1iinnfrhnf2q6htycgexmp04f1z2mrd7w7u8bigskhwq2km6yls8e2mddzh"
     )
+    settings.GITLAB_REDIRECT_URI = "http://localhost/login/gitlab"
     url = reverse("gitlab-login")
     res = client.get(url, SERVER_NAME="localhost:8000")
+    state = _get_state_from_redis(mock_redis)
     assert res.status_code == 302
     assert (
         res.url
-        == "https://gitlab.com/oauth/authorize?response_type=code&client_id=testfiuozujcfo5kxgigugr5x3xxx2ukgyandp16x6w566uits7f32crzl4yvmth&redirect_uri=https%3A%2F%2Fcodecov.io%2Flogin%2Fgitlab&state=fbdf86c6c8d64ed1b814e80b33df85c9"
+        == f"https://gitlab.com/oauth/authorize?response_type=code&client_id=testfiuozujcfo5kxgigugr5x3xxx2ukgyandp16x6w566uits7f32crzl4yvmth&redirect_uri=http%3A%2F%2Flocalhost%2Flogin%2Fgitlab&state={state}"
     )
 
 
@@ -69,7 +75,8 @@ def test_get_gitlab_already_with_code(client, mocker, db, settings, mock_redis):
         ),
     )
     url = reverse("gitlab-login")
-    res = client.get(url, {"code": "aaaaaaa"})
+    mock_redis.setex("oauth-state-abc", 300, "http://localhost:3000/gl")
+    res = client.get(url, {"code": "aaaaaaa", "state": "abc"})
     assert res.status_code == 302
     assert "gitlab-token" in res.cookies
     assert "gitlab-username" in res.cookies
@@ -83,7 +90,7 @@ def test_get_gitlab_already_with_code(client, mocker, db, settings, mock_redis):
     owner = session.owner
     assert owner.username == "ThiagoCodecov"
     assert owner.service_id == "3124507"
-    assert res.url == "/gl"
+    assert res.url == "http://localhost:3000/gl"
 
 
 def test_get_github_already_with_code_github_error(
@@ -96,7 +103,8 @@ def test_get_github_already_with_code_github_error(
 
     mocker.patch.object(Gitlab, "get_authenticated_user", side_effect=helper_func)
     url = reverse("gitlab-login")
-    res = client.get(url, {"code": "aaaaaaa"})
+    mock_redis.setex("oauth-state-abc", 300, "http://localhost:3000/gl")
+    res = client.get(url, {"code": "aaaaaaa", "state": "abc"})
     assert res.status_code == 302
     assert "gitlab-token" not in res.cookies
     assert "gitlab-username" not in res.cookies

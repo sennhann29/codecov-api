@@ -1,12 +1,12 @@
 import random
-import uuid
+from hashlib import sha1
 
 import factory
-
-from core import models
-from hashlib import sha1
 from factory.django import DjangoModelFactory
+
+from codecov_auth.models import RepositoryToken
 from codecov_auth.tests.factories import OwnerFactory
+from core import models
 
 
 class RepositoryFactory(DjangoModelFactory):
@@ -17,7 +17,9 @@ class RepositoryFactory(DjangoModelFactory):
     name = factory.Faker("word")
     service_id = factory.Sequence(lambda n: f"{n}")
     author = factory.SubFactory(OwnerFactory)
-    language = factory.Iterator([language.value for language in models.Repository.Languages])
+    language = factory.Iterator(
+        [language.value for language in models.Repository.Languages]
+    )
     fork = None
     branch = "master"
     upload_token = factory.Faker("uuid4")
@@ -153,3 +155,11 @@ class BranchFactory(DjangoModelFactory):
 class VersionFactory(DjangoModelFactory):
     class Meta:
         model = models.Version
+
+
+class RepositoryTokenFactory(DjangoModelFactory):
+    repository = factory.SubFactory(RepositoryFactory)
+    key = factory.LazyFunction(RepositoryToken.generate_key)
+
+    class Meta:
+        model = RepositoryToken

@@ -1,9 +1,8 @@
+from ariadne import ObjectType, convert_kwargs_to_snake_case
 from asgiref.sync import async_to_sync
-from ariadne import convert_kwargs_to_snake_case, ObjectType
 
-from graphql_api.actions.sync import is_syncing
+from graphql_api.actions.owner import get_owner_sessions, search_my_owners
 from graphql_api.actions.repository import search_repos
-from graphql_api.actions.owner import search_my_owners, get_owner_sessions
 from graphql_api.helpers.ariadne import ariadne_load_local_graphql
 from graphql_api.helpers.connection import (
     build_connection_graphql,
@@ -43,10 +42,7 @@ def resolve_viewable_repositories(
 ):
     queryset = search_repos(current_user, filters)
     return queryset_to_connection(
-        queryset,
-        ordering=ordering,
-        ordering_direction=ordering_direction,
-        **kwargs,
+        queryset, ordering=ordering, ordering_direction=ordering_direction, **kwargs,
     )
 
 
@@ -73,5 +69,11 @@ def resolve_sessions(current_user, _, **kwargs):
 
 
 @me_bindable.field("isSyncingWithGitProvider")
-def resolve_is_syncing_with_git_provider(current_user, _, **kwargs):
-    return is_syncing(current_user)
+def resolve_is_syncing_with_git_provider(_, info):
+    command = info.context["executor"].get_command("owner")
+    return command.is_syncing()
+
+
+@me_bindable.field("trackingMetadata")
+def resolve_tracking_data(current_user, _, **kwargs):
+    return current_user

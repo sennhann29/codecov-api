@@ -1,10 +1,9 @@
 from pathlib import Path
 
-from services.archive import build_report, ArchiveService, MinioEndpoints, ReportService
-from core.tests.factories import CommitFactory, RepositoryFactory
-from services.storage import StorageService
 from core.models import Repository
-
+from core.tests.factories import CommitFactory, RepositoryFactory
+from services.archive import ArchiveService, MinioEndpoints, ReportService, build_report
+from services.storage import StorageService
 
 current_file = Path(__file__)
 
@@ -70,7 +69,6 @@ class TestReport(object):
 
     def test_build_report_from_commit(self, db, mocker, codecov_vcr):
         mocked = mocker.patch.object(ArchiveService, "read_chunks")
-        mocker.patch.object(ArchiveService, "create_root_storage")
         f = open(current_file.parent / "samples" / "chunks.txt", "r")
         mocked.return_value = f.read()
         commit = CommitFactory.create(message="aaaaa", commitid="abf6d4d")
@@ -103,7 +101,6 @@ class TestReport(object):
 
     def test_build_report_from_commit_with_flags(self, db, mocker, codecov_vcr):
         mocked = mocker.patch.object(ArchiveService, "read_chunks")
-        mocker.patch.object(ArchiveService, "create_root_storage")
         f = open(current_file.parent / "samples" / "chunks.txt", "r")
         mocked.return_value = f.read()
         commit = CommitFactory.create(message="aaaaa", commitid="abf6d4d")

@@ -1,10 +1,10 @@
 from asgiref.sync import sync_to_async
 from shared.yaml import UserYaml, fetch_current_yaml_from_provider_via_reference
-from shared.validation.yaml import validate_yaml
+from shared.yaml.validation import validate_yaml
 from yaml import safe_load
 
-from services.repo_providers import RepoProviderService
 from codecov.commands.base import BaseInteractor
+from services.repo_providers import RepoProviderService
 
 
 class GetFinalYamlInteractor(BaseInteractor):
@@ -17,7 +17,7 @@ class GetFinalYamlInteractor(BaseInteractor):
                 commit.commitid, repository_service
             )
             yaml_dict = safe_load(yaml_on_repo)
-            return validate_yaml(yaml_dict, show_secrets=False)
+            return validate_yaml(yaml_dict, show_secrets_for=None)
         except:
             # fetching, parsing, validating the yaml inside the commit can
             # have various exception, which we do not care about to get the final

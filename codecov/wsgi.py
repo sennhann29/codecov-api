@@ -11,14 +11,16 @@ import os
 
 from django.core.wsgi import get_wsgi_application
 
-from open_telemetry import instrument
-
 from utils.config import get_settings_module
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", get_settings_module())
+if (
+    os.getenv("OPENTELEMETRY_ENDPOINT")
+    and os.getenv("OPENTELEMETRY_TOKEN")
+    and os.getenv("OPENTELEMETRY_CODECOV_RATE")
+):
+    from open_telemetry import instrument
 
-# install open telemetry tracing instrumentation in production environment
-if os.environ.get('TRANSMIT_SPANS') is not None:
     instrument()
 
 application = get_wsgi_application()

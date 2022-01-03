@@ -1,0 +1,15 @@
+type Comparison {
+  state: String!
+  error: ComparisonError
+  impactedFiles: [ImpactedFile]!
+  patchTotals: CoverageTotals
+  changeWithParent: Float
+}
+
+type ImpactedFile {
+  baseName: String
+  headName: String
+  baseCoverage: CoverageTotals
+  headCoverage: CoverageTotals
+  patchCoverage: CoverageTotals
+}

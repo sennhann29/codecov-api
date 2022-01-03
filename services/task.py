@@ -1,6 +1,7 @@
 import logging
-from celery import Celery, signature, chain
 
+from celery import Celery, chain, signature
+from shared import celery_config
 
 celery_app = Celery("tasks")
 celery_app.config_from_object("shared.celery_config:BaseCeleryConfig")
@@ -14,6 +15,24 @@ class TaskService(object):
         Create Celery signature
         """
         return signature(name, args=args, kwargs=kwargs, app=celery_app)
+
+    def compute_comparison(self, comparison_id):
+        self._create_signature(
+            celery_config.compute_comparison_task_name,
+            kwargs=dict(comparison_id=comparison_id),
+        ).apply_async()
+
+    def normalize_profiling_upload(self, profiling_upload_id):
+        return self._create_signature(
+            celery_config.profiling_normalization_task_name,
+            kwargs=dict(profiling_upload_id=profiling_upload_id),
+        ).apply_async(countdown=10)
+
+    def collect_profiling_commit(self, profiling_commit_id):
+        return self._create_signature(
+            celery_config.profiling_collection_task_name,
+            kwargs=dict(profiling_id=profiling_commit_id),
+        ).apply_async()
 
     def status_set_pending(self, repoid, commitid, branch, on_a_pull_request):
         self._create_signature(
@@ -35,20 +54,12 @@ class TaskService(object):
     def notify(self, repoid, commitid, current_yaml=None):
         self._create_signature(
             "app.tasks.notify.Notify",
-            kwargs=dict(
-                repoid=repoid,
-                commitid=commitid,
-                current_yaml=current_yaml,
-            ),
+            kwargs=dict(repoid=repoid, commitid=commitid, current_yaml=current_yaml,),
         ).apply_async()
 
     def pulls_sync(self, repoid, pullid):
         self._create_signature(
-            "app.tasks.pulls.Sync",
-            kwargs=dict(
-                repoid=repoid,
-                pullid=pullid,
-            ),
+            "app.tasks.pulls.Sync", kwargs=dict(repoid=repoid, pullid=pullid,),
         ).apply_async()
 
     def refresh(

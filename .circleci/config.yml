@@ -38,11 +38,27 @@ gcloud_auth_enterprise: &gcloud_auth_enterprise
     gcloud auth configure-docker
 
 jobs:
+  linter:
+    docker:
+      - image: circleci/python:3.7.6
+    working_directory: ~/repo
+    steps:
+      - checkout
+      - run:
+          name: Running linter
+          command: |
+            echo "Installing..."
+            pip3 install -Iv black==19.10b0 isort
+            echo "Linting..."
+            black --check .
+            echo "Sorting..."
+            isort --profile black --check .
   build:
     executor: codecov-deploy
     steps:
     - checkout
-    - setup_remote_docker
+    - setup_remote_docker:
+        version: 20.10.7
     - run:
         <<: *gcloud_auth
     - run:
@@ -51,6 +67,12 @@ jobs:
           make -f Makefile.circle build-requirements
           make -f Makefile.circle build VERSION=$CIRCLE_TAG
           make -f Makefile.circle push
+          make -f Makefile.circle tag
+          make -f Makefile.circle save
+    - persist_to_workspace:
+        root: .
+        paths:
+          - .
   build-enterprise:
     executor: codecov-deploy
     steps:
@@ -70,6 +92,7 @@ jobs:
           make -f Makefile.circle build-requirements
           make -f Makefile.circle build-enterprise VERSION=$CIRCLE_TAG
           make -f Makefile.circle push-enterprise
+          make -f Makefile.circle tag-enterprise
   test:
     executor: codecov-api
     steps:
@@ -98,7 +121,14 @@ jobs:
           apk add git
           chmod +x codecov-alpine
           ./codecov-alpine -R . --url https://stage-web.codecov.dev -t $CODECOV_STAGING_TOKEN -F unit
-
+  lint:
+    executor: codecov-api
+    steps:
+    - attach_workspace:
+        at: .
+    - run:
+        name: Pylint
+        command: make lint
   portable:
     executor: codecov-deploy
     steps:
@@ -108,11 +138,35 @@ jobs:
           <<: *gcloud_auth
       - run: echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKER_USERNAME" --password-stdin
       - run: make -f Makefile.circle docker-deploy
-
+  dive:
+      executor: codecov-deploy
+      steps:
+      - attach_workspace:
+          at: .
+      - setup_remote_docker
+      - run:
+          <<: *gcloud_auth
+      - run:
+          name: Dive image
+          command: |
+            make -f Makefile.circle dive
+  dive-enterprise:
+      executor: codecov-deploy
+      steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          <<: *gcloud_auth_enterprise
+      - run:
+          name: Dive enterprise image
+          command: |
+            make -f Makefile.circle dive-enterprise
+            make -f Makefile.circle deep-dive
   staging:
     executor: codecov-deploy
     steps:
-    - checkout
+    - attach_workspace:
+        at: .
     - setup_remote_docker
     - run:
         <<: *gcloud_auth
@@ -120,11 +174,11 @@ jobs:
         name: docker build, tag, and upload to staging
         command: |
           make -f Makefile.circle staging
-
   production:
     executor: codecov-deploy
     steps:
-    - checkout
+    - attach_workspace:
+        at: .
     - setup_remote_docker
     - run:
         <<: *gcloud_auth
@@ -156,27 +210,21 @@ jobs:
           name: Release Enterprise to Dockerhub
           command: |
             make -B -f Makefile.circle release-enterprise
-  deploy:
-    executor: codecov-deploy
-    steps:
-    - checkout
-    - setup_remote_docker
-    - run:
-        <<: *gcloud_auth
-    - run:
-        name: deploy to k8s
-        command: |-
-          make -f Makefile.circle tag
 
 workflows:
   version: 2
   build-test-deploy:
     jobs:
+      - linter
       - build:
           context: "circleci google deploy context"
           filters:
             tags:
               only: /.*/
+      - lint:
+          context: "circleci google deploy context" 
+          requires:
+            - build
       - build-enterprise:
           context: "circleci google deploy context"
           requires:
@@ -195,6 +243,13 @@ workflows:
           filters:
             tags:
               only: /.*/
+      - dive:
+          context: "circleci google deploy context"
+          requires:
+            - build
+          filters:
+            tags:
+              only: /.*/
       - portable:
           context:
             - "DockerHub Push Context"
@@ -202,6 +257,7 @@ workflows:
           requires:
             - build
             - test
+            - lint
           filters:
             branches:
               only:
@@ -212,6 +268,7 @@ workflows:
           requires:
             - build
             - test
+            - lint
           filters:
             branches:
               only: staging
@@ -220,7 +277,21 @@ workflows:
           requires:
             - build
             - test
+            - lint
+            - dive
           filters:
+            branches:
+              only: master
+      - dive-enterprise:
+          context:
+            - "circleci google deploy context"
+          requires:
+            - build-enterprise
+          filters:
+            tags:
+              only:
+                - /^qa-.*/
+                - /^enterprise-.*/
             branches:
               only: master
       - enterprise:
@@ -230,6 +301,8 @@ workflows:
           requires:
             - build-enterprise
             - test
+            - lint
+            - dive-enterprise
           filters:
             tags:
               only:
@@ -259,11 +332,3 @@ workflows:
               only: /^enterprise-.*/
             branches:
               ignore: /.*/
-      - deploy:
-          context: "circleci google deploy context"
-          requires:
-            - build
-            - test
-          filters:
-            branches:
-              only: master

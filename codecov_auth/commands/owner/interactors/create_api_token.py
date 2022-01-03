@@ -1,15 +1,15 @@
 from asgiref.sync import sync_to_async
 
-from codecov_auth.models import Session
 from codecov.commands.base import BaseInteractor
 from codecov.commands.exceptions import Unauthenticated, ValidationError
+from codecov_auth.models import Session
 
 
 class CreateApiTokenInteractor(BaseInteractor):
     def validate(self, name):
         if not self.current_user.is_authenticated:
             raise Unauthenticated()
-        if len(name) is 0:
+        if len(name) == 0:
             raise ValidationError("name cant be empty")
 
     def create_token(self, name):

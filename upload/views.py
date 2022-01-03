@@ -1,33 +1,46 @@
+import asyncio
 import logging
+from contextlib import suppress
 from datetime import datetime
-from rest_framework import status, renderers
-from rest_framework.views import APIView
-from rest_framework.permissions import AllowAny
-from rest_framework.exceptions import ValidationError
-from django.http import HttpResponse, HttpResponseServerError
-from django.utils.encoding import smart_text
-from urllib.parse import parse_qs
 from json import dumps
+from urllib.parse import parse_qs
 from uuid import uuid4
-from django.utils import timezone
 
-from .helpers import (
-    parse_params,
-    get_global_tokens,
-    determine_repo_for_upload,
-    determine_upload_branch_to_use,
-    determine_upload_pr_to_use,
-    determine_upload_commit_to_use,
-    insert_commit,
-    validate_upload,
-    parse_headers,
-    store_report_in_redis,
-    dispatch_upload_task,
-)
-from services.redis_configuration import get_redis_connection
+import minio
+from asgiref.sync import sync_to_async
+from django.contrib.auth.models import AnonymousUser
+from django.http import Http404, HttpResponse, HttpResponseServerError
+from django.utils import timezone
+from django.utils.decorators import classonlymethod
+from django.utils.encoding import smart_text
+from django.views import View
+from rest_framework import renderers, status
+from rest_framework.exceptions import APIException, ValidationError
+from rest_framework.permissions import AllowAny
+from rest_framework.views import APIView
+
+from codecov_auth.authentication import CodecovTokenAuthentication
+from codecov_auth.commands.owner import OwnerCommands
+from core.commands.repository import RepositoryCommands
 from services.archive import ArchiveService
+from services.redis_configuration import get_redis_connection
 from services.segment import SegmentService
 from utils.config import get_config
+from utils.services import get_long_service_name
+
+from .helpers import (
+    check_commit_upload_constraints,
+    determine_repo_for_upload,
+    determine_upload_branch_to_use,
+    determine_upload_commit_to_use,
+    determine_upload_pr_to_use,
+    dispatch_upload_task,
+    insert_commit,
+    parse_headers,
+    parse_params,
+    store_report_in_redis,
+    validate_upload,
+)
 
 log = logging.getLogger(__name__)
 
@@ -122,7 +135,9 @@ class UploadHandler(APIView):
         # Validate the upload to make sure the org has enough repo credits and is allowed to upload for this commit
         redis = get_redis_connection()
         validate_upload(upload_params, repository, redis)
-
+        log.info(
+            "Upload was determined to be valid", extra=dict(repoid=repository.repoid)
+        )
         # Do some processing to handle special cases for branch, pr, and commit values, and determine which values to use
         # note that these values may be different from the values provided in the upload_params
         branch = determine_upload_branch_to_use(upload_params, repository.branch)
@@ -140,9 +155,10 @@ class UploadHandler(APIView):
                 upload_params=upload_params,
             ),
         )
-        insert_commit(
+        commit = insert_commit(
             commitid, branch, pr, repository, owner, upload_params.get("parent")
         )
+        check_commit_upload_constraints(commit)
 
         # --------- Handle the actual upload
 
@@ -151,7 +167,7 @@ class UploadHandler(APIView):
         redis_key = None  # populated later for v2 uploads when storing report in Redis
 
         # Get the url where the commit details can be found on the Codecov site, we'll return this in the response
-        destination_url = f"{get_config(('setup', 'codecov_url'), default='https://codecov.io')}/{owner.service}/{owner.username}/{repository.name}/commit/{commitid}"
+        destination_url = f"{get_config('setup', 'codecov_url', default='https://codecov.io')}/{owner.service}/{owner.username}/{repository.name}/commit/{commitid}"
 
         # v2 - store request body in redis
         if version == "v2":
@@ -253,10 +269,12 @@ class UploadHandler(APIView):
             build_url = f"{get_config((repository.service, 'url'))}/{owner.username}/{repository.name}/{upload_params.get('build')}"
         else:
             build_url = upload_params.get("build_url")
-
+        queue_params = upload_params.copy()
+        if upload_params.get("using_global_token"):
+            queue_params["service"] = request_params.get("service")
         # Define the task arguments to send when dispatching upload task to worker
         task_arguments = {
-            **upload_params,
+            **queue_params,
             "build_url": build_url,
             "reportid": reportid,
             "redis_key": redis_key,  # location of report for v2 uploads; this will be "None" for v4 uploads
@@ -296,4 +314,65 @@ class UploadHandler(APIView):
             response["Content-Type"] = "application/json"
 
         response.status_code = status.HTTP_200_OK
+        return response
+
+
+class UploadDownloadHandler(View):
+    @sync_to_async
+    def get_user(self, request):
+        with suppress(APIException, TypeError):
+            return CodecovTokenAuthentication().authenticate(request)[0]
+        return AnonymousUser()
+
+    @classonlymethod
+    def as_view(_, **initkwargs):
+        view = super().as_view(**initkwargs)
+        view._is_coroutine = asyncio.coroutines._is_coroutine
+        return view
+
+    async def get_repo(self):
+        owner = await OwnerCommands(self.request.user, self.service).fetch_owner(
+            self.owner_username
+        )
+        if owner is None:
+            raise Http404("Requested report could not be found")
+        repo = await RepositoryCommands(
+            self.request.user, self.service
+        ).fetch_repository(owner, self.repo_name)
+        if repo is None:
+            raise Http404("Requested report could not be found")
+        return repo
+
+    def validate_path(self):
+        if not self.path or "v4/raw" not in self.path:
+            raise Http404("Requested report could not be found")
+
+    def read_params(self):
+        self.path = self.request.GET.get("path")
+        self.service = get_long_service_name(self.kwargs.get("service"))
+        self.repo_name = self.kwargs.get("repo_name")
+        self.owner_username = self.kwargs.get("owner_username")
+
+    @sync_to_async
+    def get_from_storage(self, repo):
+        archive_service = ArchiveService(repo)
+
+        # Verify that the repo hash in the path matches the repo in the URL by generating the repo hash
+        if archive_service.storage_hash not in self.path:
+            raise Http404("Requested report could not be found")
+        try:
+            return archive_service.read_file(self.path)
+
+        except minio.error.NoSuchKey as e:
+            raise Http404("Requested report could not be found")
+
+    async def get(self, request, *args, **kwargs):
+        self.read_params()
+        self.validate_path()
+        request.user = await self.get_user(request)
+        repo = await self.get_repo()
+        raw_uploaded_report = await self.get_from_storage(repo)
+
+        response = HttpResponse(raw_uploaded_report)
+        response["Content-Type"] = "text/plain"
         return response

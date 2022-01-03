@@ -1,16 +1,15 @@
-import stripe
 import logging
 from abc import ABC, abstractmethod
 
+import stripe
 from django.conf import settings
 
-from codecov_auth.constants import (
-    USER_PLAN_REPRESENTATIONS,
+from billing.constants import (
     PR_AUTHOR_PAID_USER_PLAN_REPRESENTATIONS,
+    USER_PLAN_REPRESENTATIONS,
 )
 from codecov_auth.models import Owner
 from services.segment import SegmentService
-
 
 log = logging.getLogger(__name__)
 
@@ -128,7 +127,7 @@ class StripeService(AbstractPaymentService):
 
     @_log_stripe_error
     def get_subscription(self, owner):
-        if owner.stripe_subscription_id is None:
+        if not owner.stripe_subscription_id:
             return None
         return stripe.Subscription.retrieve(
             owner.stripe_subscription_id,

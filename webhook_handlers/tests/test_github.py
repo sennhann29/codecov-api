@@ -1,31 +1,32 @@
-import uuid
-import pytest
 import hmac
-from hashlib import sha1
 import json
+import uuid
+from collections import namedtuple
+from hashlib import sha1
+from unittest.mock import call, patch
 
-from unittest.mock import patch, call
-
-from rest_framework.test import APITestCase
-from rest_framework.reverse import reverse
+import pytest
 from rest_framework import status
+from rest_framework.reverse import reverse
+from rest_framework.test import APITestCase
 
+from codecov_auth.models import Owner, Service
+from codecov_auth.tests.factories import OwnerFactory
+from core.models import Repository
 from core.tests.factories import (
-    RepositoryFactory,
     BranchFactory,
     CommitFactory,
     PullFactory,
+    RepositoryFactory,
 )
-from core.models import Repository
-from codecov_auth.models import Owner, Service
-from codecov_auth.tests.factories import OwnerFactory
 from utils.config import get_config
-
 from webhook_handlers.constants import (
     GitHubHTTPHeaders,
     GitHubWebhookEvents,
     WebhookHandlerErrorMessages,
 )
+
+MockedSubscription = namedtuple("Subscription", ["status"])
 
 
 class GithubWebhookHandlerTests(APITestCase):
@@ -349,9 +350,7 @@ class GithubWebhookHandlerTests(APITestCase):
 
         response = self._post_event_data(
             event=GitHubWebhookEvents.STATUS,
-            data={
-                "repository": {"id": self.repo.service_id},
-            },
+            data={"repository": {"id": self.repo.service_id},},
         )
 
         assert response.status_code == status.HTTP_200_OK
@@ -360,10 +359,7 @@ class GithubWebhookHandlerTests(APITestCase):
     def test_status_exits_early_for_codecov_statuses(self):
         response = self._post_event_data(
             event=GitHubWebhookEvents.STATUS,
-            data={
-                "context": "codecov/",
-                "repository": {"id": self.repo.service_id},
-            },
+            data={"context": "codecov/", "repository": {"id": self.repo.service_id},},
         )
 
         assert response.status_code == status.HTTP_200_OK
@@ -372,10 +368,7 @@ class GithubWebhookHandlerTests(APITestCase):
     def test_status_exits_early_for_pending_statuses(self):
         response = self._post_event_data(
             event=GitHubWebhookEvents.STATUS,
-            data={
-                "state": "pending",
-                "repository": {"id": self.repo.service_id},
-            },
+            data={"state": "pending", "repository": {"id": self.repo.service_id},},
         )
 
         assert response.status_code == status.HTTP_200_OK
@@ -412,9 +405,7 @@ class GithubWebhookHandlerTests(APITestCase):
 
         response = self._post_event_data(
             event=GitHubWebhookEvents.PULL_REQUEST,
-            data={
-                "repository": {"id": self.repo.service_id},
-            },
+            data={"repository": {"id": self.repo.service_id},},
         )
 
         assert response.status_code == status.HTTP_200_OK
@@ -451,9 +442,7 @@ class GithubWebhookHandlerTests(APITestCase):
                 "repository": {"id": self.repo.service_id},
                 "action": "edited",
                 "number": pull.pullid,
-                "pull_request": {
-                    "title": new_title,
-                },
+                "pull_request": {"title": new_title,},
             },
         )
 
@@ -679,11 +668,15 @@ class GithubWebhookHandlerTests(APITestCase):
         )
         assert response.status_code == status.HTTP_400_BAD_REQUEST
 
+    @patch("services.billing.stripe.Subscription.retrieve")
     @patch("services.task.TaskService.sync_plans")
-    def test_marketplace_subscription_triggers_sync_plans_task(self, sync_plans_mock):
+    def test_marketplace_subscription_triggers_sync_plans_task(
+        self, sync_plans_mock, subscription_retrieve_mock
+    ):
         sender = {"id": 545, "login": "buddy@guy.com"}
         action = "purchased"
         account = {"type": "Organization", "id": 54678, "login": "username"}
+        subscription_retrieve_mock.return_value = None
         response = self._post_event_data(
             event=GitHubWebhookEvents.MARKETPLACE_PURCHASE,
             data={
@@ -691,6 +684,37 @@ class GithubWebhookHandlerTests(APITestCase):
                 "sender": sender,
                 "marketplace_purchase": {"account": account},
             },
+        )
+
+        sync_plans_mock.assert_called_once_with(
+            sender=sender, account=account, action=action
+        )
+
+    @patch("logging.Logger.warning")
+    @patch("services.billing.stripe.Subscription.retrieve")
+    @patch("services.task.TaskService.sync_plans")
+    def test_marketplace_subscription_purchase_but_user_has_stripe_subscription(
+        self, sync_plans_mock, subscription_retrieve_mock, log_warning_mock
+    ):
+        sender = {"id": 545, "login": "buddy@guy.com"}
+        action = "purchased"
+        account = {"type": "Organization", "id": 54678, "login": "username"}
+        OwnerFactory(
+            username=account["login"], service="github", stripe_subscription_id="abc"
+        )
+        subscription_retrieve_mock.return_value = MockedSubscription("active")
+        response = self._post_event_data(
+            event=GitHubWebhookEvents.MARKETPLACE_PURCHASE,
+            data={
+                "action": action,
+                "sender": sender,
+                "marketplace_purchase": {"account": account},
+            },
+        )
+
+        log_warning_mock.assert_called_with(
+            "GHM webhook - user purchasing but has a Stripe Subscription",
+            extra=dict(username="username"),
         )
 
         sync_plans_mock.assert_called_once_with(

@@ -1,40 +1,36 @@
-import uuid
 import logging
+import uuid
 from datetime import datetime
-from django.utils import timezone
+
 from django.http import Http404
-
-from rest_framework import filters, mixins, viewsets
-from rest_framework.exceptions import PermissionDenied, NotAuthenticated
-from rest_framework.response import Response
+from django.utils import timezone
+from django_filters import BooleanFilter
+from django_filters import rest_framework as django_filters
+from rest_framework import filters, mixins, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import NotAuthenticated, PermissionDenied
 from rest_framework.permissions import SAFE_METHODS  # ['GET', 'HEAD', 'OPTIONS']
-from rest_framework import status
-
-from django_filters import rest_framework as django_filters, BooleanFilter
-from internal_api.repo.filter import RepositoryFilters, RepositoryOrderingFilter
+from rest_framework.response import Response
 
 from core.models import Repository
-from services.repo_providers import RepoProviderService
-from services.segment import SegmentService
-from services.decorators import torngit_safe
+from internal_api.mixins import OwnerPropertyMixin
 from internal_api.permissions import (
     RepositoryPermissionsService,
     UserIsAdminPermissions,
 )
-from internal_api.mixins import OwnerPropertyMixin
+from internal_api.repo.filter import RepositoryFilters, RepositoryOrderingFilter
+from services.decorators import torngit_safe
+from services.repo_providers import RepoProviderService
+from services.segment import SegmentService
 
 from .repository_accessors import RepoAccessors
+from .repository_actions import create_webhook_on_provider, delete_webhook_on_provider
 from .serializers import (
-    RepoWithMetricsSerializer,
     RepoDetailsSerializer,
+    RepoWithMetricsSerializer,
     SecretStringPayloadSerializer,
 )
-
 from .utils import encode_secret_string
-
-from .repository_actions import delete_webhook_on_provider, create_webhook_on_provider
-
 
 log = logging.getLogger(__name__)
 
@@ -181,43 +177,6 @@ class RepositoryViewSet(
             self.request.user.ownerid, self.get_object()
         )
         return super().destroy(request, *args, **kwargs)
-
-    @action(detail=False, url_path="statistics")
-    def statistics(self, request, *args, **kwargs):
-        # Only get viewable repositories
-        queryset = self.owner.repository_set.viewable_repos(self.request.user)
-
-        # Filter the repositories by the list of repositories if it is set
-        if self.request.query_params.get("names"):
-            queryset = queryset.filter(
-                name__in=self.request.query_params.get("names", [])
-            )
-
-        # Then only get the repositories with totals and then annotate the latest commit
-        results = (
-            queryset.with_latest_commit_totals_before(
-                self.request.query_params.get(
-                    "before_date", timezone.now().isoformat()
-                ),
-                self.request.query_params.get("branch", None),
-                include_previous_totals=True,
-            )
-            .exclude_uncovered()
-            .get_aggregated_coverage()
-        )
-
-        return Response(
-            data={
-                "repos_count": results["repo_count"],
-                "sum_lines": results["sum_lines"],
-                "sum_hits": results["sum_hits"],
-                "sum_partials": results["sum_partials"],
-                "sum_misses": results["sum_misses"],
-                "weighted_coverage": results["weighted_coverage"],
-                "weighted_coverage_change": results["weighted_coverage_change"],
-                "average_complexity": results["average_complexity"],
-            }
-        )
 
     @action(detail=True, methods=["patch"], url_path="regenerate-upload-token")
     def regenerate_upload_token(self, request, *args, **kwargs):

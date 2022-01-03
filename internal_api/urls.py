@@ -1,36 +1,29 @@
-from django.urls import path, include
-from django.conf import urls, settings
+from django.conf import settings, urls
+from django.urls import include, path
+from rest_framework.exceptions import server_error
+from rest_framework.routers import DefaultRouter
 
+from internal_api.branch.views import BranchViewSet
+from internal_api.commit.views import CommitsViewSet
+from internal_api.compare.views import CompareViewSet
 from internal_api.owner.views import (
-    ProfileViewSet,
-    OwnerViewSet,
-    UserViewSet,
-    InvoiceViewSet,
     AccountDetailsViewSet,
+    InvoiceViewSet,
+    OwnerViewSet,
     PlanViewSet,
+    UserViewSet,
 )
 from internal_api.pull.views import PullViewSet
-from internal_api.commit.views import CommitsViewSet
-from internal_api.branch.views import BranchViewSet
 from internal_api.repo.views import RepositoryViewSet
-from internal_api.compare.views import CompareViewSet
+from utils.routers import OptionalTrailingSlashRouter, RetrieveUpdateDestroyRouter
 
-
-from rest_framework.routers import DefaultRouter
-from rest_framework.exceptions import server_error
-
-from .routers import OptionalTrailingSlashRouter, RetrieveUpdateDestroyRouter
 from .error_views import not_found
-
 
 urls.handler404 = not_found
 urls.handler500 = server_error
 
 plans_router = OptionalTrailingSlashRouter()
 plans_router.register(r"plans", PlanViewSet, basename="plans")
-
-profile_router = RetrieveUpdateDestroyRouter()
-profile_router.register(r"profile", ProfileViewSet, basename="profile")
 
 owners_router = OptionalTrailingSlashRouter()
 owners_router.register(r"owners", OwnerViewSet, basename="owners")
@@ -61,7 +54,6 @@ if not settings.IS_ENTERPRISE:
     urlpatterns += [
         path("charts/", include("internal_api.chart.urls")),
         path("", include(plans_router.urls)),
-        path("", include(profile_router.urls)),
         path("<str:service>/", include(owners_router.urls)),
         path(
             "<str:service>/<str:owner_username>/", include(owner_artifacts_router.urls)

@@ -1,8 +1,9 @@
-from .settings_base import *
 import os
+
 import sentry_sdk
 from sentry_sdk.integrations.django import DjangoIntegration
 
+from .settings_base import *
 
 DEBUG = False
 THIS_POD_IP = os.environ.get("THIS_POD_IP")
@@ -12,7 +13,12 @@ ALLOWED_HOSTS = get_config(
 if THIS_POD_IP:
     ALLOWED_HOSTS.append(THIS_POD_IP)
 
-INSTALLED_APPS += ["ddtrace.contrib.django"]
+elastic_apm_enabled = bool(os.environ.get("ELASTIC_APM_ENABLED"))
+if elastic_apm_enabled:
+    INSTALLED_APPS += ["elasticapm.contrib.django"]
+    MIDDLEWARE += ["elasticapm.contrib.django.middleware.TracingMiddleware"]
+else:
+    INSTALLED_APPS += ["ddtrace.contrib.django"]
 
 WEBHOOK_URL = get_config("setup", "webhook_url", default="https://codecov.io")
 
@@ -41,6 +47,12 @@ CORS_ALLOWED_ORIGINS = [
     CODECOV_DASHBOARD_URL,
     "https://gazebo.netlify.app",  # to access unreleased URL of gazebo
 ]
+# We are also using the CORS settings to verify if the domain is safe to
+# Redirect after authentication, update this setting with care
+CORS_ALLOWED_ORIGIN_REGEXES = []
 
 DATA_UPLOAD_MAX_MEMORY_SIZE = 15000000
-SILENCED_SYSTEM_CHECKS = ['urls.W002']
+SILENCED_SYSTEM_CHECKS = ["urls.W002"]
+
+# Reinforcing the Cookie SameSite configuration to be sure it's Lax in prod
+COOKIE_SAME_SITE = "Lax"

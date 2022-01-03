@@ -1,16 +1,15 @@
 import logging
+
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
-from codecov_auth.models import Owner
-from codecov_auth.constants import (
-    PR_AUTHOR_PAID_USER_PLAN_REPRESENTATIONS,
+from billing.constants import (
     CURRENTLY_OFFERED_PLANS,
+    PR_AUTHOR_PAID_USER_PLAN_REPRESENTATIONS,
 )
-
+from codecov_auth.models import Owner
 from services.billing import BillingService
 from services.segment import SegmentService
-
 
 log = logging.getLogger(__name__)
 
@@ -35,35 +34,6 @@ class OwnerSerializer(serializers.ModelSerializer):
     def get_stats(self, obj):
         if obj.cache and "stats" in obj.cache:
             return obj.cache["stats"]
-
-
-class ProfileSerializer(OwnerSerializer):
-    class Meta:
-        model = Owner
-        read_only_fields = (
-            "avatar_url",
-            "service",
-            "username",
-            "stats",
-            "ownerid",
-            "integration_id",
-            "staff",
-            "service_id",
-            "plan",
-            "plan_provider",
-            "plan_user_count",
-            "did_trial",
-            "delinquent",
-            "yaml",
-            "updatestamp",
-            "bot",
-            "student",
-            "createstamp",
-            "updatestamp",
-            "student_created_at",
-            "student_updated_at",
-        )
-        fields = read_only_fields + ("email", "name", "private_access")
 
 
 class StripeLineItemSerializer(serializers.Serializer):
@@ -141,7 +111,7 @@ class PlanSerializer(serializers.Serializer):
                 raise serializers.ValidationError(
                     f"Quantity for paid plan must be greater than 5"
                 )
-            if plan["quantity"] < len(owner.plan_activated_users or []):
+            if plan["quantity"] < owner.activated_user_count:
                 raise serializers.ValidationError(
                     f"Quantity cannot be lower than currently activated user count"
                 )

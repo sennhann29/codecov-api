@@ -1,12 +1,13 @@
-from glob import glob
-import celery
-from modulefinder import ModuleFinder
 import os
+from glob import glob
+from modulefinder import ModuleFinder
 from pathlib import Path
+
+import celery
 
 finder = ModuleFinder()
 
-so_extension = ".cpython-37m-x86_64-linux-gnu.so"
+so_extension = ".cpython-39-x86_64-linux-gnu.so"
 
 
 def get_relevant_paths(path):
@@ -30,9 +31,12 @@ def get_relevant_dirs(path):
 
 
 def find_imported_modules(filename):
-    finder.run_script(filename)
-    for name, mod in finder.modules.items():
-        yield name
+    try:
+        finder.run_script(filename)
+        for name, mod in finder.modules.items():
+            yield name
+    except AttributeError:
+        pass
 
 
 def generate_files_to_be_cythonized():
@@ -53,38 +57,46 @@ def generate_files_to_be_cythonized():
 
 
 def main():
-    hidden_imports = set(
-        [
-            "celery_config",
-            "codecov.graphs",
-            "core.migrations",
-            "reports.migrations",
-            "codecov_auth.migrations",
-            "corsheaders",
-            "corsheaders.apps",
-            "corsheaders.middleware",
-            "dataclasses",
-            "hooks",
-            "pythonjsonlogger",
-            "pythonjsonlogger.jsonlogger",
-            "rest_framework",
-            "rest_framework.apps",
-            "rest_framework.metadata",
-            "rest_framework.mixins",
-            "rest_framework.filters",
-            "rest_framework.status",
-            "utils",
-            "utils.config",
-            "utils.encryption",
-            "utils.logging_configuration",
-            "ariadne.contrib.django.apps",
-            "whitenoise",
-            "whitenoise.middleware",
-            "graphql_api",
-            "legacy_migrations",
-            "shared.celery_config"
-        ]
-    )
+    hidden_imports = {
+        "billing.migrations",
+        "celery_config",
+        "codecov.graphs",
+        "core.migrations",
+        "reports.migrations",
+        "codecov_auth.migrations",
+        "compare.migrations",
+        "corsheaders",
+        "corsheaders.apps",
+        "corsheaders.middleware",
+        "dataclasses",
+        "hooks",
+        "profiling.migrations",
+        "pythonjsonlogger",
+        "pythonjsonlogger.jsonlogger",
+        "rest_framework",
+        "rest_framework.apps",
+        "rest_framework.metadata",
+        "rest_framework.mixins",
+        "rest_framework.filters",
+        "rest_framework.status",
+        "utils",
+        "utils.config",
+        "utils.encryption",
+        "utils.logging_configuration",
+        "ariadne_django.apps",
+        "whitenoise",
+        "whitenoise.middleware",
+        "graphql_api",
+        "legacy_migrations",
+        "legacy_migrations.migrations",
+        "shared.celery_config",
+        "kombu.transport.pyamqp",
+        "gunicorn",
+        "gunicorn.glogging",
+        "gunicorn.workers.sync",
+        "gunicorn.instrument",
+        "gunicorn.instrument.statsd",
+    }
 
     base = celery.__file__.rsplit("/", 1)[0]
     hidden_imports.update(

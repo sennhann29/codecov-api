@@ -1,10 +1,9 @@
 import json
 
-from django.conf import settings
-from django.test.client import Client
-from django.test import TestCase
-
 import pytest
+from django.conf import settings
+from django.test import TestCase
+from django.test.client import Client
 
 
 class ViewTest(TestCase):
@@ -15,7 +14,7 @@ class ViewTest(TestCase):
         )
         self.assertRedirects(
             response,
-            "http://localhost:9000/gh/codecov/codecov.io/settings",
+            "http://localhost:3000/gh/codecov/codecov.io/settings",
             302,
             fetch_redirect_response=False,
         )

@@ -1,30 +1,25 @@
-import asyncio
-
 from rest_framework import mixins, viewsets
-from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, PermissionDenied
+from rest_framework.response import Response
+
 from core.models import Commit
-
-from services.comparison import (
-    Comparison,
-    PullRequestComparison,
-    MissingComparisonCommit,
-    MissingComparisonReport,
-)
-
-from services.repo_providers import RepoProviderService
-from services.decorators import torngit_safe
-
 from internal_api.compare.serializers import (
-    FileComparisonSerializer,
     ComparisonSerializer,
+    FileComparisonSerializer,
     FlagComparisonSerializer,
 )
-
 from internal_api.mixins import CompareSlugMixin
-from internal_api.repo.repository_accessors import RepoAccessors
 from internal_api.permissions import RepositoryArtifactPermissions
+from internal_api.repo.repository_accessors import RepoAccessors
+from services.comparison import (
+    Comparison,
+    MissingComparisonCommit,
+    MissingComparisonReport,
+    PullRequestComparison,
+)
+from services.decorators import torngit_safe
+from services.repo_providers import RepoProviderService
 
 
 class CompareViewSet(
@@ -35,7 +30,6 @@ class CompareViewSet(
 
     def get_object(self):
         compare_data = self.get_compare_data()
-        asyncio.set_event_loop(asyncio.new_event_loop())
 
         if "pull" in compare_data:
             try:

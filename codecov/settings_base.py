@@ -1,8 +1,8 @@
-from corsheaders.defaults import default_headers
-
-from utils.config import get_config, get_settings_module, SettingsModule
 import os
 
+from corsheaders.defaults import default_headers
+
+from utils.config import SettingsModule, get_config, get_settings_module
 
 # SECURITY WARNING: keep the secret key used in production secret!
 # TODO: get this out of source control
@@ -24,15 +24,18 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    "ariadne.contrib.django",
+    "ariadne_django",
     "corsheaders",
     "rest_framework",
+    "billing",
     "core",
     "codecov_auth",
     "reports",
     "internal_api",
     "graphql_api",
     "compare",
+    "profiling",
+    "public_api",
 ]
 
 MIDDLEWARE = [
@@ -102,15 +105,9 @@ AUTH_PASSWORD_VALIDATORS = [
     {
         "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
     },
-    {
-        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
-    },
-    {
-        "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
-    },
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",},
 ]
 
 
@@ -184,6 +181,7 @@ MINIO_HASH_KEY = get_config("services", "minio", "hash_key")
 ARCHIVE_BUCKET_NAME = "codecov"
 ENCRYPTION_SECRET = get_config("setup", "encryption_secret")
 
+COOKIE_SAME_SITE = "Lax"
 COOKIE_SECRET = get_config("setup", "http", "cookie_secret")
 COOKIES_DOMAIN = get_config("setup", "http", "cookies_domain", default=".codecov.io")
 SESSION_COOKIE_DOMAIN = get_config(
@@ -227,3 +225,18 @@ DJANGO_ADMIN_URL = get_config("django", "admin_url", default="admin")
 
 IS_ENTERPRISE = get_settings_module() == SettingsModule.ENTERPRISE.value
 IS_DEV = get_settings_module() == SettingsModule.DEV.value
+
+DATA_UPLOAD_MAX_MEMORY_SIZE = get_config(
+    "setup", "http", "upload_max_memory_size", default=2621440
+)
+FILE_UPLOAD_MAX_MEMORY_SIZE = get_config(
+    "setup", "http", "file_upload_max_memory_size", default=2621440
+)
+
+
+CORS_ALLOWED_ORIGIN_REGEXES = []
+CORS_ALLOWED_ORIGINS = []
+
+GRAPHQL_PLAYGROUND = False
+
+UPLOAD_THROTTLING_ENABLED = True
