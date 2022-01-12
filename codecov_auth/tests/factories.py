@@ -1,7 +1,7 @@
 from uuid import uuid4
 
 import factory
-from django.utils import timezone
+from datetime import datetime
 from factory.django import DjangoModelFactory
 
 from codecov_auth.models import Owner, RepositoryToken, Service, Session
@@ -18,7 +18,7 @@ class OwnerFactory(DjangoModelFactory):
     username = factory.Faker("user_name")
     service = "github"
     service_id = factory.Sequence(lambda n: f"{n}")
-    updatestamp = factory.LazyFunction(timezone.now)
+    updatestamp = factory.LazyFunction(datetime.now)
     plan_activated_users = []
     admins = []
     permission = []
