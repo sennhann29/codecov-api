@@ -8,6 +8,7 @@ from hashlib import md5
 
 from django.contrib.postgres.fields import ArrayField, CITextField
 from django.db import models
+from django.utils import timezone
 
 from billing.constants import BASIC_PLAN_NAME, USER_PLAN_REPRESENTATIONS
 from codecov.models import BaseCodecovModel
@@ -106,7 +107,7 @@ class Owner(models.Model):
     invoice_details = models.TextField(null=True)
     delinquent = models.BooleanField(null=True)
     yaml = models.JSONField(null=True)
-    updatestamp = DateTimeWithoutTZField(default=datetime.now)
+    updatestamp = DateTimeWithoutTZField(default=timezone.now)
     organizations = ArrayField(models.IntegerField(null=True), null=True)
     admins = ArrayField(models.IntegerField(null=True), null=True)
     integration_id = models.IntegerField(null=True)
