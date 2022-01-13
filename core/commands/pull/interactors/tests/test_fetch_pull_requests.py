@@ -40,14 +40,14 @@ class FetchPullRequestsInteractorTest(TransactionTestCase):
         no_pull = async_to_sync(self.execute)(
             None, self.repository_no_pull_requests, self.filters
         )
-        assert len(no_pull) is 0
+        assert len(no_pull) == 0
 
     def test_fetch_when_repository_has_pulls(self):
         self.filters = None
         pull_request = async_to_sync(self.execute)(
             None, self.repository_with_pull_requests, self.filters
         )
-        assert len(pull_request) is 1
+        assert len(pull_request) == 1
         assert pull_request[0].pullid == self.pull_id
         assert pull_request[0].title == self.pull_title
         assert (
@@ -92,14 +92,14 @@ class FetchPullRequestsInteractorTest(TransactionTestCase):
         pull_request = async_to_sync(self.execute)(
             None, self.repository_with_pull_requests, self.filters
         )
-        assert len(pull_request) is 6
+        assert len(pull_request) == 6
 
         # Execute without open filter
         self.filters = {"state": [PullStates.OPEN]}
         pull_request = async_to_sync(self.execute)(
             None, self.repository_with_pull_requests, self.filters
         )
-        assert len(pull_request) is 3
+        assert len(pull_request) == 3
         for pull in pull_request:
             assert pull.state == PullStates.OPEN.value
 
@@ -108,7 +108,7 @@ class FetchPullRequestsInteractorTest(TransactionTestCase):
         pull_request = async_to_sync(self.execute)(
             None, self.repository_with_pull_requests, self.filters
         )
-        assert len(pull_request) is 2
+        assert len(pull_request) == 2
         for pull in pull_request:
             assert pull.state == PullStates.CLOSED.value
 
@@ -117,7 +117,7 @@ class FetchPullRequestsInteractorTest(TransactionTestCase):
         pull_request = async_to_sync(self.execute)(
             None, self.repository_with_pull_requests, self.filters
         )
-        assert len(pull_request) is 1
+        assert len(pull_request) == 1
         for pull in pull_request:
             assert pull.state == PullStates.MERGED.value
 
@@ -126,4 +126,4 @@ class FetchPullRequestsInteractorTest(TransactionTestCase):
         pull_request = async_to_sync(self.execute)(
             None, self.repository_with_pull_requests, self.filters
         )
-        assert len(pull_request) is 4
+        assert len(pull_request) == 4
