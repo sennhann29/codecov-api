@@ -128,7 +128,7 @@ class Owner(models.Model):
         return f"Owner<{self.service}/{self.username}>"
 
     def save(self, *args, **kwargs):
-        self.updatestamp = datetime.now()
+        self.updatestamp = timezone.now()
         super().save(*args, **kwargs)
 
     @property
