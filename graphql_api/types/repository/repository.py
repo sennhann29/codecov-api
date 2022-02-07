@@ -66,7 +66,10 @@ async def resolve_commits(repository, info, filters=None, **kwargs):
     command = info.context["executor"].get_command("commit")
     queryset = await command.fetch_commits(repository, filters)
     return await queryset_to_connection(
-        queryset, ordering="updatestamp", ordering_direction=OrderingDirection.DESC, **kwargs
+        queryset,
+        ordering="updatestamp",
+        ordering_direction=OrderingDirection.DESC,
+        **kwargs,
     )
 
 
