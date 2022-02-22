@@ -48,6 +48,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "codecov.middleware.utm_middleware.UTMMiddleware",
 ]
 
 AUTHENTICATION_BACKENDS = [

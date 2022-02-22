@@ -161,28 +161,6 @@ class LoginMixinTests(TestCase):
         user_signed_in_mock.assert_called_once()
 
     @patch("services.segment.SegmentService.user_signed_in")
-    def test_set_marketing_tags_on_cookies(self, user_signed_in_mock):
-        owner = OwnerFactory(service="github")
-        self.request = RequestFactory().get(
-            "",
-            {
-                "utm_department": "a",
-                "utm_campaign": "b",
-                "utm_medium": "c",
-                "utm_source": "d",
-                "utm_content": "e",
-                "utm_term": "f",
-            },
-        )
-        self.mixin_instance.request = self.request
-        response = HttpResponse()
-        self.mixin_instance.store_to_cookie_utm_tags(response)
-        assert (
-            response.cookies["_marketing_tags"].value
-            == "utm_department=a&utm_campaign=b&utm_medium=c&utm_source=d&utm_content=e&utm_term=f"
-        )
-
-    @patch("services.segment.SegmentService.user_signed_in")
     def test_use_marketing_tags_from_cookies(self, user_signed_in_mock):
         owner = OwnerFactory(service_id=89, service="github")
         self.request.COOKIES[
