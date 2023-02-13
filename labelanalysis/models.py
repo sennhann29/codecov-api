@@ -7,7 +7,10 @@ from codecov.models import BaseCodecovModel
 
 class LabelAnalysisRequest(BaseCodecovModel):
     base_commit = models.ForeignKey(
-        "core.Commit", on_delete=models.CASCADE, related_name="label_requests_as_base"
+        "core.Commit",
+        on_delete=models.CASCADE,
+        related_name="label_requests_as_base",
+        null=True,
     )
     head_commit = models.ForeignKey(
         "core.Commit", on_delete=models.CASCADE, related_name="label_requests_as_head"
