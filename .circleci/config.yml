@@ -109,7 +109,13 @@ jobs:
         name: Install CLI
         command: |
           apk add git openssh musl-dev gcc build-base python3-dev libffi-dev
-          pip install git+ssh://git@github.com/codecov/codecov-cli.git@16282e83ac4c7658b1c3cee28dea0ee49b258f48#egg=codecov-cli
+          mkdir workspace
+          pip wheel git+ssh://git@github.com/codecov/codecov-cli.git@9a8498ab43772d6508a703c1d5360387ec525974#egg=codecov-cli --wheel-dir workspace
+          pip install workspace/*
+    - persist_to_workspace:
+        root: workspace
+        paths:
+          - "*.whl"
     - run:
         name: Save commit info 
         command: |
@@ -118,6 +124,10 @@ jobs:
         name: Create report
         command: |
           codecovcli --auto-load-params-from circleci create-report --service=github
+    - run:
+        name: Run Static Analysis
+        command: |
+          codecovcli static-analysis --token=$STATIC_TOKEN
   test:
     executor: codecov-api
     working_directory: ~/repo
