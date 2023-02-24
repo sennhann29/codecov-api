@@ -8,7 +8,7 @@ from django.db.models import (
     F,
     FloatField,
     IntegerField,
-    JSONField,
+    Manager,
     OuterRef,
     Q,
     QuerySet,
@@ -41,6 +41,55 @@ class RepositoryQuerySet(QuerySet):
         'with_latest_commit_totals_before' on queryset first.
         """
         return self.exclude(latest_commit_totals__isnull=True)
+
+    def with_recent_coverage(self) -> QuerySet:
+        """
+        Annotates queryset with recent commit totals from latest commit
+        that is more than an hour old.  This ensures that the coverage totals
+        are not changing as the most recent commit is uploading coverage
+        reports.
+        """
+        from core.models import Commit
+
+        timestamp = datetime.datetime.now() - datetime.timedelta(hours=1)
+
+        commits_queryset = Commit.objects.filter(
+            repository_id=OuterRef("pk"),
+            state=Commit.CommitStates.COMPLETE,
+            branch=OuterRef("branch"),
+            timestamp__lte=timestamp,
+        ).order_by("-timestamp")
+
+        coverage = Cast(
+            KeyTextTransform("c", "recent_commit_totals"),
+            output_field=FloatField(),
+        )
+        hits = Cast(
+            KeyTextTransform("h", "recent_commit_totals"),
+            output_field=IntegerField(),
+        )
+        misses = Cast(
+            KeyTextTransform("m", "recent_commit_totals"),
+            output_field=IntegerField(),
+        )
+        lines = Cast(
+            KeyTextTransform("n", "recent_commit_totals"),
+            output_field=IntegerField(),
+        )
+
+        return self.annotate(
+            recent_commit_totals=Subquery(commits_queryset.values("totals")[:1]),
+            coverage_sha=Subquery(commits_queryset.values("commitid")[:1]),
+            recent_coverage=coverage,
+            coverage=Coalesce(
+                coverage,
+                Value(-1),
+                output_field=FloatField(),
+            ),
+            hits=hits,
+            misses=misses,
+            lines=lines,
+        )
 
     def with_latest_commit_totals_before(
         self, before_date, branch, include_previous_totals=False
@@ -183,24 +232,6 @@ class RepositoryQuerySet(QuerySet):
             ),
         )
 
-    def with_cache_coverage(self):
-        """
-        Annotates queryset with coverage based on a Repository's cache. We annotate:
-        - true_coverage as the real value from the cache
-        - coverage as the true_coverage except NULL are transformed to -1
-        This make sure when we order the repo with no coverage appears last.
-        """
-        coverage_from_cache = Cast(
-            KeyTextTransform(
-                "c", KeyTextTransform("totals", KeyTextTransform("commit", "cache"))
-            ),
-            output_field=FloatField(),
-        )
-        return self.annotate(
-            true_coverage=coverage_from_cache,
-            coverage=Coalesce(coverage_from_cache, Value(-1)),
-        )
-
     def with_cache_latest_commit_at(self):
         """
         Annotates queryset with latest commit based on a Repository's cache. We annotate:
@@ -215,8 +246,21 @@ class RepositoryQuerySet(QuerySet):
         return self.annotate(
             true_latest_commit_at=latest_commit_at_from_cache,
             latest_commit_at=Coalesce(
-                latest_commit_at_from_cache, Value(datetime.datetime(1900, 1, 1)),
+                latest_commit_at_from_cache, Value(datetime.datetime(1900, 1, 1))
             ),
+        )
+
+    def with_oldest_commit_at(self):
+        """
+        Annotates the queryset with the oldest commit timestamp.
+        """
+        from core.models import Commit
+
+        commits = Commit.objects.filter(repository_id=OuterRef("pk")).order_by(
+            "timestamp"
+        )
+        return self.annotate(
+            oldest_commit_at=Subquery(commits.values("timestamp")[:1]),
         )
 
     def get_or_create_from_git_repo(self, git_repo, owner):
@@ -281,3 +325,17 @@ class RepositoryQuerySet(QuerySet):
             repo.save()
 
         return repo, created
+
+
+# We cannot use `QuerySet.as_manager()` since it relies on the `inspect` module and will
+# not play nicely with Cython (which we use for self-hosted):
+# https://cython.readthedocs.io/en/latest/src/userguide/limitations.html#inspect-support
+class RepositoryManager(Manager):
+    def get_queryset(self):
+        return RepositoryQuerySet(self.model, using=self._db)
+
+    def viewable_repos(self, *args, **kwargs):
+        return self.get_queryset().viewable_repos(*args, **kwargs)
+
+    def get_or_create_from_git_repo(self, *args, **kwargs):
+        return self.get_queryset().get_or_create_from_git_repo(*args, **kwargs)

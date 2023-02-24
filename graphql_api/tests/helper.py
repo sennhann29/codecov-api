@@ -1,7 +1,6 @@
 from unittest.mock import patch
 
-from asgiref.sync import sync_to_async
-
+from codecov.db import sync_to_async
 from codecov_auth.tests.factories import SessionFactory
 
 
@@ -14,6 +13,7 @@ class GraphQLTestHelper:
         provider="gh",
         user=None,
         variables={},
+        with_errors=False,
     ):
         url = f"/graphql/{provider}"
         headers = {}
@@ -32,7 +32,7 @@ class GraphQLTestHelper:
             **headers,
         )
 
-        return response.json()["data"]
+        return response.json() if with_errors else response.json()["data"]
 
 
 def paginate_connection(connection):

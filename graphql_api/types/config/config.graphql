@@ -1,0 +1,7 @@
+type Config {
+  loginProviders: [LoginProvider!]!
+  seatsUsed: Int
+  seatsLimit: Int
+  isTimescaleEnabled: Boolean!
+  hasAdmins: Boolean
+}

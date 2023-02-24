@@ -4,7 +4,16 @@ import factory
 from django.utils import timezone
 from factory.django import DjangoModelFactory
 
-from codecov_auth.models import Owner, RepositoryToken, Service, Session
+from codecov_auth.models import (
+    OrganizationLevelToken,
+    Owner,
+    OwnerProfile,
+    RepositoryToken,
+    Service,
+    Session,
+    TokenTypeChoices,
+    UserToken,
+)
 from utils.encryption import encryptor
 
 
@@ -31,6 +40,14 @@ class OwnerFactory(DjangoModelFactory):
     )
 
 
+class OwnerProfileFactory(DjangoModelFactory):
+    class Meta:
+        model = OwnerProfile
+
+    owner = factory.SubFactory(OwnerFactory)
+    default_org = factory.SubFactory(OwnerFactory)
+
+
 class SessionFactory(DjangoModelFactory):
     class Meta:
         model = Session
@@ -39,3 +56,30 @@ class SessionFactory(DjangoModelFactory):
     lastseen = timezone.now()
     type = Session.SessionType.API.value
     token = factory.Faker("uuid4")
+
+
+class OrganizationLevelTokenFactory(DjangoModelFactory):
+    class Meta:
+        model = OrganizationLevelToken
+
+    owner = factory.SubFactory(OwnerFactory)
+    token = uuid4()
+    token_type = TokenTypeChoices.UPLOAD
+
+
+class GetAdminProviderAdapter:
+    def __init__(self, result=False):
+        self.result = result
+        self.last_call_args = None
+
+    async def get_is_admin(self, user):
+        self.last_call_args = user
+        return self.result
+
+
+class UserTokenFactory(DjangoModelFactory):
+    class Meta:
+        model = UserToken
+
+    owner = factory.SubFactory(OwnerFactory)
+    token = factory.LazyAttribute(lambda _: uuid4())

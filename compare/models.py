@@ -2,6 +2,7 @@ from django.db import models
 
 from codecov.models import BaseCodecovModel
 from core.models import Commit
+from reports.models import RepositoryFlag
 
 
 class CommitComparison(BaseCodecovModel):
@@ -32,5 +33,21 @@ class CommitComparison(BaseCodecovModel):
             models.UniqueConstraint(
                 name="unique_comparison_between_commit",
                 fields=["base_commit", "compare_commit"],
-            ),
+            )
         ]
+
+    @property
+    def is_processed(self):
+        return self.state == CommitComparison.CommitComparisonStates.PROCESSED
+
+
+class FlagComparison(BaseCodecovModel):
+    commit_comparison = models.ForeignKey(
+        CommitComparison, on_delete=models.CASCADE, related_name="flag_comparisons"
+    )
+    repositoryflag = models.ForeignKey(
+        RepositoryFlag, on_delete=models.CASCADE, related_name="flag_comparisons"
+    )
+    head_totals = models.JSONField(null=True)
+    base_totals = models.JSONField(null=True)
+    patch_totals = models.JSONField(null=True)

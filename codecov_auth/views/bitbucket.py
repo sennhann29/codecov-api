@@ -28,10 +28,10 @@ class BitbucketLoginView(View, LoginMixin):
             ),
             token=token,
         )
-        stuff_to_save = "%(key)s:%(secret)s" % token
         user_data = await repo_service.get_authenticated_user()
         authenticated_user = {
-            "access_token": stuff_to_save,
+            "key": token["key"],
+            "secret": token["secret"],
             "id": user_data["uuid"][1:-1],
             "login": user_data.pop("username"),
         }
@@ -40,7 +40,7 @@ class BitbucketLoginView(View, LoginMixin):
             user=authenticated_user,
             orgs=user_orgs,
             is_student=False,
-            has_private_access=False,
+            has_private_access=True,
         )
 
     def redirect_to_bitbucket_step(self, request):
@@ -48,7 +48,7 @@ class BitbucketLoginView(View, LoginMixin):
             oauth_consumer_token=dict(
                 key=settings.BITBUCKET_CLIENT_ID,
                 secret=settings.BITBUCKET_CLIENT_SECRET,
-            ),
+            )
         )
         oauth_token_pair = repo_service.generate_request_token(
             settings.BITBUCKET_REDIRECT_URI
@@ -74,7 +74,7 @@ class BitbucketLoginView(View, LoginMixin):
             oauth_consumer_token=dict(
                 key=settings.BITBUCKET_CLIENT_ID,
                 secret=settings.BITBUCKET_CLIENT_SECRET,
-            ),
+            )
         )
         oauth_verifier = request.GET.get("oauth_verifier")
         # we use an unsigned cookie here because that's what tornado also does
@@ -92,9 +92,14 @@ class BitbucketLoginView(View, LoginMixin):
             cookie_key, cookie_secret, oauth_verifier
         )
         user_dict = self.fetch_user_data(token)
-        response = redirect(settings.CODECOV_DASHBOARD_URL + "/bb")
+        user = self.get_and_modify_user(user_dict, request)
+        redirection_url = settings.CODECOV_DASHBOARD_URL + "/bb"
+        redirection_url = self.modify_redirection_url_based_on_default_user_org(
+            redirection_url, user
+        )
+        response = redirect(redirection_url)
         response.delete_cookie("_oauth_request_token", domain=settings.COOKIES_DOMAIN)
-        user = self.login_from_user_dict(user_dict, request, response)
+        self.set_cookies_and_login_user(user, request, response)
         log.info("User successfully logged in", extra=dict(ownerid=user.ownerid))
         return response
 

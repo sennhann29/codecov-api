@@ -1,7 +1,12 @@
 from ariadne import ObjectType, convert_kwargs_to_snake_case
-from asgiref.sync import async_to_sync
 
-from graphql_api.actions.owner import get_owner_sessions, search_my_owners
+from codecov.db import sync_to_async
+from codecov_auth.models import Owner, OwnerProfile
+from graphql_api.actions.owner import (
+    get_owner_login_sessions,
+    get_user_tokens,
+    search_my_owners,
+)
 from graphql_api.actions.repository import search_repos
 from graphql_api.helpers.ariadne import ariadne_load_local_graphql
 from graphql_api.helpers.connection import (
@@ -14,6 +19,7 @@ me = ariadne_load_local_graphql(__file__, "me.graphql")
 me = me + build_connection_graphql("ViewableRepositoryConnection", "Repository")
 me = me + build_connection_graphql("MyOrganizationConnection", "Owner")
 me = me + build_connection_graphql("SessionConnection", "Session")
+me = me + build_connection_graphql("UserTokenConnection", "UserToken")
 me_bindable = ObjectType("Me")
 
 
@@ -42,7 +48,10 @@ def resolve_viewable_repositories(
 ):
     queryset = search_repos(current_user, filters)
     return queryset_to_connection(
-        queryset, ordering=ordering, ordering_direction=ordering_direction, **kwargs,
+        queryset,
+        ordering=(ordering, RepositoryOrdering.ID),
+        ordering_direction=ordering_direction,
+        **kwargs,
     )
 
 
@@ -51,7 +60,7 @@ def resolve_my_organizations(current_user, _, filters=None, **kwargs):
     queryset = search_my_owners(current_user, filters)
     return queryset_to_connection(
         queryset,
-        ordering="ownerid",
+        ordering=("ownerid",),
         ordering_direction=OrderingDirection.DESC,
         **kwargs,
     )
@@ -59,10 +68,21 @@ def resolve_my_organizations(current_user, _, filters=None, **kwargs):
 
 @me_bindable.field("sessions")
 def resolve_sessions(current_user, _, **kwargs):
-    queryset = get_owner_sessions(current_user)
+    queryset = get_owner_login_sessions(current_user)
     return queryset_to_connection(
         queryset,
-        ordering="sessionid",
+        ordering=("sessionid",),
+        ordering_direction=OrderingDirection.DESC,
+        **kwargs,
+    )
+
+
+@me_bindable.field("tokens")
+def resolve_tokens(current_user, _, **kwargs):
+    queryset = get_user_tokens(current_user)
+    return queryset_to_connection(
+        queryset,
+        ordering=("created_at",),
         ordering_direction=OrderingDirection.DESC,
         **kwargs,
     )
@@ -77,3 +97,15 @@ def resolve_is_syncing_with_git_provider(_, info):
 @me_bindable.field("trackingMetadata")
 def resolve_tracking_data(current_user, _, **kwargs):
     return current_user
+
+
+tracking_metadata_bindable = ObjectType("trackingMetadata")
+
+
+@tracking_metadata_bindable.field("profile")
+@sync_to_async
+def resolve_profile(owner: Owner, info) -> OwnerProfile:
+    try:
+        return owner.profile
+    except OwnerProfile.DoesNotExist:
+        return None

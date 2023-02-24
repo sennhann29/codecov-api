@@ -3,13 +3,13 @@ from unittest.mock import patch
 import minio
 from ddf import G
 from rest_framework.reverse import reverse
-from rest_framework.test import APITestCase
+from rest_framework.test import APITransactionTestCase
 
 from codecov_auth.models import Owner
 from core.models import Repository
 
 
-class UploadDownloadHelperTest(APITestCase):
+class UploadDownloadHelperTest(APITransactionTestCase):
     def _get(self, kwargs={}, data={}):
         path = f"/upload/{kwargs.get('service')}/{kwargs.get('owner_username')}/{kwargs.get('repo_name')}/download"
         return self.client.get(path, data=data)
@@ -85,8 +85,8 @@ class UploadDownloadHelperTest(APITestCase):
             data={"path": "v4/raw/hasssshhh"},
         )
         assert response.status_code == 200
-        headers = response._headers
-        assert headers["content-type"] == ("Content-Type", "text/plain")
+        headers = response.headers
+        assert headers["content-type"] == "text/plain"
 
     @patch("services.archive.ArchiveService.read_file")
     def test_invalid_repo_archive_path(self, mock_read_file):

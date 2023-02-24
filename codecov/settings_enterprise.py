@@ -16,40 +16,17 @@ CORS_ALLOW_CREDENTIALS = True
 CODECOV_URL = get_config("setup", "codecov_url", default="http://localhost")
 CODECOV_API_URL = get_config("setup", "codecov_api_url", default=CODECOV_URL)
 
-db_url = get_config("services", "database_url")
-db_conf = urlparse(db_url)
-DATABASE_USER = db_conf.username
-DATABASE_NAME = db_conf.path.replace("/", "")
-DATABASE_PASSWORD = db_conf.password
-DATABASE_HOST = db_conf.hostname
-DATABASE_PORT = db_conf.port
-
-
-# this is the time in seconds django decides to keep the connection open after the request
-# the default is 0 seconds, meaning django closes the connection after every request
-# https://docs.djangoproject.com/en/3.1/ref/settings/#conn-max-age
-CONN_MAX_AGE = int(get_config("services", "database", "conn_max_age", default=0))
-
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": DATABASE_NAME,
-        "USER": DATABASE_USER,
-        "PASSWORD": DATABASE_PASSWORD,
-        "HOST": DATABASE_HOST,
-        "PORT": DATABASE_PORT,
-        "CONN_MAX_AGE": CONN_MAX_AGE,
-    }
-}
 
 REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticatedOrReadOnly",
     ),
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "codecov_auth.authentication.CodecovSessionAuthentication",
+        "codecov_auth.authentication.CodecovTokenAuthentication",
+        "rest_framework.authentication.BasicAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
     ),
-    "DEFAULT_PAGINATION_CLASS": "internal_api.pagination.StandardPageNumberPagination",
+    "DEFAULT_PAGINATION_CLASS": "api.shared.pagination.StandardPageNumberPagination",
     "DEFAULT_FILTER_BACKENDS": ("django_filters.rest_framework.DjangoFilterBackend",),
     "PAGE_SIZE": 20,
 }
@@ -77,3 +54,28 @@ if API_DOMAIN != DEFAULT_WHITELISTED_DOMAIN:
 STRIPE_API_KEY = None
 SILENCED_SYSTEM_CHECKS = ["urls.W002"]
 UPLOAD_THROTTLING_ENABLED = False
+
+BITBUCKET_REDIRECT_URI = get_config(
+    "bitbucket", "redirect_uri", default=f"{CODECOV_URL}/login/bitbucket"
+)
+GITLAB_REDIRECT_URI = get_config(
+    "gitlab", "redirect_uri", default=f"{CODECOV_URL}/login/gitlab"
+)
+
+
+GITLAB_ENTERPRISE_REDIRECT_URI = get_config(
+    "gitlab_enterprise",
+    "redirect_uri",
+    default=f"{CODECOV_URL}/login/gle",
+)
+
+CODECOV_DASHBOARD_URL = get_config(
+    "setup", "codecov_dashboard_url", default=CODECOV_URL
+)
+
+COOKIES_DOMAIN = get_config(
+    "setup", "http", "cookies_domain", default=f".{DEFAULT_WHITELISTED_DOMAIN}"
+)
+SESSION_COOKIE_DOMAIN = COOKIES_DOMAIN
+
+ADMINS_LIST = get_config("setup", "admins", default=[])

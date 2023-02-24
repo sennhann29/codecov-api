@@ -1,18 +1,21 @@
-import hashlib
-import hmac
 import logging
-from base64 import b64decode
 
+from django.conf import settings
 from django.contrib.auth.backends import BaseBackend
 from django.utils import timezone
 from rest_framework import authentication, exceptions
 
+from codecov_auth.authentication.types import SuperToken, SuperUser
 from codecov_auth.helpers import decode_token_from_cookie
-from codecov_auth.models import Owner, Session
+from codecov_auth.models import Owner, Session, UserToken
 from utils.config import get_config
 from utils.services import get_long_service_name
 
 log = logging.getLogger(__name__)
+
+
+def get_session(token: str) -> Session:
+    return Session.objects.select_related("owner", "owner__profile").get(token=token)
 
 
 class CodecovAuthMixin:
@@ -28,9 +31,7 @@ class CodecovAuthMixin:
 
     def get_user_and_session(self, token, request):
         try:
-            session = Session.objects.select_related("owner", "owner__profile").get(
-                token=token
-            )
+            session = get_session(token)
         except Session.DoesNotExist:
             raise exceptions.AuthenticationFailed("No such user")
         if (
@@ -167,3 +168,29 @@ class CodecovSessionAuthentication(
 
         token = self.decode_token_from_cookie(encoded_cookie)
         return self.get_user_and_session(token, request)
+
+
+class UserTokenAuthentication(authentication.TokenAuthentication):
+    keyword = "Bearer"
+
+    def authenticate_credentials(self, key):
+        try:
+            token = UserToken.objects.select_related("owner").get(token=key)
+        except UserToken.DoesNotExist:
+
+            raise exceptions.AuthenticationFailed("Invalid token.")
+
+        if token.valid_until is not None and token.valid_until <= timezone.now():
+
+            raise exceptions.AuthenticationFailed("Invalid token.")
+
+        return (token.owner, token)  # TODO: might want to return some other object here
+
+
+class SuperTokenAuthentication(authentication.TokenAuthentication):
+    keyword = "Bearer"
+
+    def authenticate_credentials(self, key):
+        if key == settings.SUPER_API_TOKEN:
+            return (SuperUser(), SuperToken(token=key))
+        return None

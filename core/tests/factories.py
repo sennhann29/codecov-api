@@ -160,6 +160,15 @@ class VersionFactory(DjangoModelFactory):
 class RepositoryTokenFactory(DjangoModelFactory):
     repository = factory.SubFactory(RepositoryFactory)
     key = factory.LazyFunction(RepositoryToken.generate_key)
+    token_type = "profiling"
 
     class Meta:
         model = RepositoryToken
+
+
+class CommitErrorFactory(DjangoModelFactory):
+    class Meta:
+        model = models.CommitError
+
+    commit = factory.SubFactory(CommitFactory)
+    error_code = factory.Faker("")

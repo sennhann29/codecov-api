@@ -1,10 +1,15 @@
 from ariadne import EnumType
 
+from services.comparison import ImpactedFileParameter
+from timeseries.models import Interval as MeasurementInterval
+
 from .enums import (
-    ComparisonError,
     CoverageLine,
     GoalOnboarding,
+    LoginProvider,
     OrderingDirection,
+    OrderingParameter,
+    PathContentDisplayType,
     PullRequestState,
     RepositoryOrdering,
     TypeProjectOnboarding,
@@ -17,11 +22,15 @@ enum_types = [
     EnumType("RepositoryOrdering", RepositoryOrdering),
     EnumType("OrderingDirection", OrderingDirection),
     EnumType("CoverageLine", CoverageLine),
-    EnumType("ComparisonError", ComparisonError),
+    EnumType("PathContentDisplayType", PathContentDisplayType),
     EnumType("TypeProjectOnboarding", TypeProjectOnboarding),
     EnumType("GoalOnboarding", GoalOnboarding),
+    EnumType("OrderingParameter", OrderingParameter),
     EnumType("PullRequestState", PullRequestState),
     EnumType("UploadState", UploadState),
     EnumType("UploadType", UploadType),
     EnumType("UploadErrorEnum", UploadErrorEnum),
+    EnumType("MeasurementInterval", MeasurementInterval),
+    EnumType("LoginProvider", LoginProvider),
+    EnumType("ImpactedFileParameter", ImpactedFileParameter),
 ]

@@ -1,22 +1,27 @@
 import logging
 import re
 import uuid
+from distutils.log import Log
+from functools import reduce
 from json import dumps
+from typing import Dict
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from django.conf import settings
 from django.contrib.auth import login
-from django.core.exceptions import SuspiciousOperation
+from django.core.exceptions import PermissionDenied, SuspiciousOperation
 from django.utils import timezone
+from shared.encryption.token import encode_token
+from shared.license import LICENSE_ERRORS_MESSAGES, get_current_license
 
 from codecov_auth.helpers import create_signed_value
-from codecov_auth.models import Owner, Session
+from codecov_auth.models import Owner, OwnerProfile, Service, Session
 from services.redis_configuration import get_redis_connection
 from services.refresh import RefreshService
 from services.segment import SegmentService
 from utils.config import get_config
 from utils.encryption import encryptor
-from utils.services import get_short_service_name
+from utils.services import get_long_service_name, get_short_service_name
 
 log = logging.getLogger(__name__)
 
@@ -116,9 +121,23 @@ class StateMixin(object):
 class LoginMixin(object):
     segment_service = SegmentService()
 
-    def get_is_enterprise(self):
-        # TODO Change when rolling out enterprise
-        return False
+    def modify_redirection_url_based_on_default_user_org(
+        self, url: str, user: Owner
+    ) -> str:
+        if (
+            url
+            != f"{settings.CODECOV_DASHBOARD_URL}/{get_short_service_name(self.service)}"
+            and url
+            != f"{settings.CODECOV_DASHBOARD_URL}/{get_long_service_name(self.service)}"
+        ):
+            return url
+
+        owner_profile = None
+        if user:
+            owner_profile = OwnerProfile.objects.filter(owner_id=user.ownerid).first()
+        if owner_profile is not None and owner_profile.default_org is not None:
+            url += f"/{owner_profile.default_org.username}"
+        return url
 
     def get_or_create_org(self, single_organization):
         owner, was_created = Owner.objects.get_or_create(
@@ -126,20 +145,28 @@ class LoginMixin(object):
         )
         return owner
 
-    def login_from_user_dict(self, user_dict, request, response):
+    def set_cookies_and_login_user(self, user, request, response):
+        self._set_proper_cookies_and_session(user, request, response)
+        RefreshService().trigger_refresh(user.ownerid, user.username)
+
+        # Login the user if staff via Django authentication. Allows staff users to access Django admin.
+        if user.is_staff:
+            login(request, user)
+
+        return log.info("User is logging in", extra=dict(ownerid=user.ownerid))
+
+    def get_and_modify_user(self, user_dict, request) -> Owner:
         user_orgs = user_dict["orgs"]
         formatted_orgs = [
             dict(username=org["username"], id=str(org["id"])) for org in user_orgs
         ]
+
+        self._check_enterprise_organizations_membership(user_dict, formatted_orgs)
         upserted_orgs = []
         for org in formatted_orgs:
             upserted_orgs.append(self.get_or_create_org(org))
 
-        if self.get_is_enterprise() and get_config(self.service, "organizations"):
-            # TODO Change when rolling out enterprise
-            pass
-
-        self._check_user_count_limitations()
+        self._check_user_count_limitations(user_dict["user"])
         user, is_new_user = self._get_or_create_user(user_dict, request)
         fields_to_update = []
         if user_dict.get("is_student") != user.student:
@@ -151,6 +178,8 @@ class LoginMixin(object):
                 ["student", "student_created_at", "student_updated_at"]
             )
 
+        # Updated by the task `SyncTeams` that is called after login.
+        # We will only set this for the initial "oranizations is none" login.
         if user.organizations is None:
             user.organizations = [o.ownerid for o in upserted_orgs]
             fields_to_update.extend(["organizations"])
@@ -166,14 +195,6 @@ class LoginMixin(object):
         if fields_to_update:
             user.save(update_fields=fields_to_update + ["updatestamp"])
 
-        self._set_proper_cookies_and_session(user, request, response)
-        RefreshService().trigger_refresh(user.ownerid, user.username)
-
-        # Login the user if staff via Django authentication. Allows staff users to access Django admin.
-        if user.is_staff:
-            login(request, user)
-
-        log.info("User is logging in", extra=dict(ownerid=user.ownerid))
         return user
 
     def _set_proper_cookies_and_session(self, user, request, response):
@@ -210,9 +231,64 @@ class LoginMixin(object):
             samesite=settings.COOKIE_SAME_SITE,
         )
 
-    def _check_user_count_limitations(self):
-        # TODO (Thiago): Do when on enterprise
-        pass
+    def _check_enterprise_organizations_membership(self, user_dict, orgs):
+        """Checks if a user belongs to the restricted organizations (or teams if GitHub) allowed in settings."""
+        if settings.IS_ENTERPRISE and get_config(self.service, "organizations"):
+            orgs_in_settings = set(get_config(self.service, "organizations"))
+            orgs_in_user = set(org["username"] for org in orgs)
+            if not (orgs_in_settings & orgs_in_user):
+                raise PermissionDenied(
+                    "You must be a member of an organization listed in the Codecov Enterprise setup."
+                )
+            if get_config(self.service, "teams") and "teams" in user_dict:
+                teams_in_settings = set(get_config(self.service, "teams"))
+                teams_in_user = set([team["name"] for team in user_dict["teams"]])
+                if not (teams_in_settings & teams_in_user):
+                    raise PermissionDenied(
+                        "You must be a member of an allowed team in your organization."
+                    )
+
+    def _check_user_count_limitations(self, login_data):
+        if not settings.IS_ENTERPRISE:
+            return
+        license = get_current_license()
+        if not license.is_valid:
+            return
+
+        try:
+            user_logging_in_if_exists = Owner.objects.get(
+                service=f"{self.service}", service_id=login_data["id"]
+            )
+        except Owner.DoesNotExist:
+            user_logging_in_if_exists = None
+
+        if license.number_allowed_users:
+            if license.is_pr_billing:
+                # User is consuming seat if found in _any_ owner's plan_activated_users
+                is_consuming_seat = user_logging_in_if_exists and Owner.objects.filter(
+                    plan_activated_users__contains=[user_logging_in_if_exists.ownerid]
+                )
+                if not is_consuming_seat:
+                    owners_with_activated_users = Owner.objects.exclude(
+                        plan_activated_users__len=0
+                    ).exclude(plan_activated_users__isnull=True)
+                    all_distinct_actiaved_users = reduce(
+                        lambda acc, curr: set(curr.plan_activated_users) | acc,
+                        owners_with_activated_users,
+                        set(),
+                    )
+                    if len(all_distinct_actiaved_users) > license.number_allowed_users:
+                        raise PermissionDenied(
+                            LICENSE_ERRORS_MESSAGES["users-exceeded"]
+                        )
+            elif not user_logging_in_if_exists or (
+                user_logging_in_if_exists and not user_logging_in_if_exists.oauth_token
+            ):
+                users_on_service_count = Owner.objects.filter(
+                    oauth_token__isnull=False, service=f"{self.service}"
+                ).count()
+                if users_on_service_count > license.number_allowed_users:
+                    raise PermissionDenied(LICENSE_ERRORS_MESSAGES["users-exceeded"])
 
     def _get_or_create_user(self, user_dict, request):
         fields_to_update = ["oauth_token", "private_access", "updatestamp"]
@@ -226,7 +302,7 @@ class LoginMixin(object):
             fields_to_update.append("username")
             owner.username = login_data["login"]
 
-        owner.oauth_token = encryptor.encode(login_data["access_token"]).decode()
+        owner.oauth_token = encryptor.encode(encode_token(login_data)).decode()
         owner.private_access = user_dict["has_private_access"]
         if user_dict["user"].get("name"):
             owner.name = user_dict["user"]["name"]
@@ -264,17 +340,21 @@ class LoginMixin(object):
         return {k: v for k, v in filtered_params.items() if v is not None}
 
     def store_to_cookie_utm_tags(self, response) -> None:
-        data = urlencode(self._get_utm_params(self.request.GET))
-        response.set_cookie(
-            "_marketing_tags",
-            data,
-            max_age=500,  # Same as state validatiy
-            httponly=True,
-            domain=settings.COOKIES_DOMAIN,
-        )
+        if not settings.IS_ENTERPRISE:
+            data = urlencode(self._get_utm_params(self.request.GET))
+            response.set_cookie(
+                "_marketing_tags",
+                data,
+                max_age=86400,  # Same as state validatiy
+                httponly=True,
+                domain=settings.COOKIES_DOMAIN,
+            )
 
     def retrieve_marketing_tags_from_cookie(self) -> dict:
-        cookie_data = self.request.COOKIES.get("_marketing_tags", "")
-        params_as_dict = parse_qs(cookie_data)
-        filtered_params = self._get_utm_params(params_as_dict)
-        return {k: v[0] for k, v in filtered_params.items()}
+        if not settings.IS_ENTERPRISE:
+            cookie_data = self.request.COOKIES.get("_marketing_tags", "")
+            params_as_dict = parse_qs(cookie_data)
+            filtered_params = self._get_utm_params(params_as_dict)
+            return {k: v[0] for k, v in filtered_params.items()}
+        else:
+            return {}

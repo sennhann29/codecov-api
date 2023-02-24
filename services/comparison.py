@@ -1,20 +1,31 @@
 import asyncio
+import copy
+import enum
 import functools
 import json
 import logging
-import os
 from collections import Counter
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Optional
 
 import minio
+import pytz
 from asgiref.sync import async_to_sync
+from django.db.models import Prefetch
 from django.utils.functional import cached_property
 from shared.helpers.yaml import walk
+from shared.reports.types import ReportTotals
 from shared.utils.merge import LineType, line_type
 
+from compare.models import CommitComparison
 from core.models import Commit
-from services.archive import ReportService
+from reports.models import CommitReport, ReportDetails
+from services import ServiceException
+from services.archive import ArchiveService, ReportService
 from services.redis_configuration import get_redis_connection
 from services.repo_providers import RepoProviderService
+from services.task import TaskService
 from utils.config import get_config
 
 log = logging.getLogger(__name__)
@@ -34,8 +45,10 @@ def _is_removed(line_value):
     return line_value and line_value[0] == "-"
 
 
-class ComparisonException(Exception):
-    pass
+class ComparisonException(ServiceException):
+    @property
+    def message(self):
+        return str(self)
 
 
 class MissingComparisonCommit(ComparisonException):
@@ -61,7 +74,7 @@ class FileComparisonTraverseManager:
         ^^ Generally client code should supply both, except in a couple cases:
           1. The file is newly tracked. In this case, there is no base file, so we should
              iterate only over the head file lines.
-          2. The file is deleted. As of right now (4/2/2020), we don't show deleted files in 
+          2. The file is deleted. As of right now (4/2/2020), we don't show deleted files in
              comparisons, but if we were to support that, we would not supply a head_file_eof
              and instead only iterate over lines in the base file.
 
@@ -99,7 +112,7 @@ class FileComparisonTraverseManager:
         """
         self.head_file_eof = head_file_eof
         self.base_file_eof = base_file_eof
-        self.segments = segments
+        self.segments = copy.deepcopy(segments)
         self.src = src
 
         if self.segments:
@@ -341,6 +354,100 @@ class LineComparison:
             return functools.reduce(lambda a, b: a + b, session_coverage)
 
 
+class Segment:
+    """
+    A segment represents a continuous subset set of lines in a file where either
+    the coverage has changed or the code has changed (i.e. is part of a diff).
+    """
+
+    # additional lines included before and after each segment
+    padding_lines = 3
+
+    # max distance between lines with coverage changes in a single segment
+    line_distance = 6
+
+    @classmethod
+    def segments(cls, file_comparison):
+        lines = file_comparison.lines
+
+        # line numbers of interest (i.e. coverage changed or code changed)
+        line_numbers = []
+        for idx, line in enumerate(lines):
+            if (
+                line.coverage["base"] != line.coverage["head"]
+                or line.added
+                or line.removed
+            ):
+                line_numbers.append(idx)
+
+        segmented_lines = []
+        if len(line_numbers) > 0:
+            segmented_lines, last = [[]], None
+            for line_number in line_numbers:
+                if last is None or line_number - last <= cls.line_distance:
+                    segmented_lines[-1].append(line_number)
+                else:
+                    segmented_lines.append([line_number])
+                last = line_number
+
+        segments = []
+        for group in segmented_lines:
+            # padding lines before first line of interest
+            start_line_number = group[0] - cls.padding_lines
+            start_line_number = max(start_line_number, 0)
+            # padding lines after last line of interest
+            end_line_number = group[-1] + cls.padding_lines
+            end_line_number = min(end_line_number, len(lines) - 1)
+
+            segment = cls(lines[start_line_number : end_line_number + 1])
+            segments.append(segment)
+
+        return segments
+
+    def __init__(self, lines):
+        self._lines = lines
+
+    @property
+    def header(self):
+        base_start = None
+        head_start = None
+        num_removed = 0
+        num_added = 0
+        num_context = 0
+
+        for line in self.lines:
+            if base_start is None and line.number["base"] is not None:
+                base_start = int(line.number["base"])
+            if head_start is None and line.number["head"] is not None:
+                head_start = int(line.number["head"])
+            if line.added:
+                num_added += 1
+            elif line.removed:
+                num_removed += 1
+            else:
+                num_context += 1
+
+        return (
+            base_start or 0,
+            num_context + num_removed,
+            head_start or 0,
+            num_context + num_added,
+        )
+
+    @property
+    def lines(self):
+        return self._lines
+
+    @property
+    def has_unintended_changes(self):
+        for line in self.lines:
+            head_coverage = line.coverage["base"]
+            base_coverage = line.coverage["head"]
+            if not (line.added or line.removed) and (base_coverage != head_coverage):
+                return True
+        return False
+
+
 class FileComparison:
     def __init__(
         self,
@@ -397,7 +504,7 @@ class FileComparison:
                 lambda a, b: a + b,
                 [len(segment["lines"]) for segment in self.diff_data["segments"]],
             )
-            if self.diff_data is not None and self.diff_data["segments"]
+            if self.diff_data is not None and self.diff_data.get("segments")
             else 0
         )
 
@@ -420,11 +527,15 @@ class FileComparison:
         # Here we pass this along to the frontend by assigning the diff totals
         # to the head_totals' 'diff' attribute. It is absolutely worth considering
         # modifying the behavior of shared.reports to implement something similar.
+        diff_totals = None
         if head_totals and self.diff_data:
-            head_totals.diff = self.diff_data.get("totals", 0)
+            diff_totals = self.diff_data.get("totals")
+            head_totals.diff = diff_totals or 0
+
         return {
             "base": self.base_file.totals if self.base_file is not None else None,
             "head": head_totals,
+            "diff": diff_totals,
         }
 
     @property
@@ -458,7 +569,9 @@ class FileComparison:
             FileComparisonTraverseManager(
                 head_file_eof=self.head_file.eof if self.head_file is not None else 0,
                 base_file_eof=self.base_file.eof if self.base_file is not None else 0,
-                segments=self.diff_data["segments"] if self.diff_data else [],
+                segments=self.diff_data["segments"]
+                if self.diff_data and "segments" in self.diff_data
+                else [],
                 src=self.src,
             ).apply([change_summary_visitor, create_lines_visitor])
 
@@ -468,19 +581,42 @@ class FileComparison:
     def change_summary(self):
         return self._calculated_changes_and_lines[0]
 
+    @property
+    def has_changes(self):
+        return any(self.change_summary.values())
+
     @cached_property
     def lines(self):
         if self.total_diff_length > MAX_DIFF_SIZE and not self.bypass_max_diff:
             return None
         return self._calculated_changes_and_lines[1]
 
+    @cached_property
+    def segments(self):
+        return Segment.segments(self)
+
+
+report_service = ReportService()
+
 
 class Comparison(object):
     def __init__(self, user, base_commit, head_commit):
         self.user = user
-        self.base_commit = base_commit
-        self.head_commit = head_commit
-        self.report_service = ReportService()
+        self._base_commit = base_commit
+        self._head_commit = head_commit
+
+    def validate(self):
+        # make sure head and base reports exist (will throw an error if not)
+        self.head_report
+        self.base_report
+
+    @cached_property
+    def base_commit(self):
+        return self._base_commit
+
+    @cached_property
+    def head_commit(self):
+        return self._head_commit
 
     @cached_property
     def files(self):
@@ -527,25 +663,47 @@ class Comparison(object):
     @cached_property
     def base_report(self):
         try:
-            return self.report_service.build_report_from_commit(self.base_commit)
+            return report_service.build_report_from_commit(self.base_commit)
         except minio.error.NoSuchKey:
-            raise MissingComparisonReport()
+            raise MissingComparisonReport("Missing base report")
 
     @cached_property
     def head_report(self):
         try:
-            report = self.report_service.build_report_from_commit(self.head_commit)
+            report = report_service.build_report_from_commit(self.head_commit)
         except minio.error.NoSuchKey:
-            raise MissingComparisonReport()
+            raise MissingComparisonReport("Missing head report")
 
         report.apply_diff(self.git_comparison["diff"])
         return report
+
+    @cached_property
+    def has_different_number_of_head_and_base_sessions(self):
+        self.validate()
+        head_sessions = self.head_report.sessions
+        base_sessions = self.base_report.sessions
+        # We're treating this case as false since considering CFF's complicates the logic
+        if self._has_cff_sessions(head_sessions) or self._has_cff_sessions(
+            base_sessions
+        ):
+            return False
+        return len(head_sessions) != len(base_sessions)
+
+    # I feel this method should belong to the API Report class, but we're thinking of getting rid of that class soon
+    # In truth, this should be in the shared.Report class
+    def _has_cff_sessions(self, sessions) -> bool:
+        for session in sessions.values():
+            if session.session_type.value == "carriedforward":
+                return True
+
+        return False
 
     @property
     def totals(self):
         return {
             "base": self.base_report.totals if self.base_report is not None else None,
             "head": self.head_report.totals if self.head_report is not None else None,
+            "diff": self.git_comparison["diff"].get("totals"),
         }
 
     @property
@@ -555,8 +713,8 @@ class Comparison(object):
     @property
     def upload_commits(self):
         """
-            Returns the commits that have uploads between base and head.
-            :return: Queryset of core.models.Commit objects
+        Returns the commits that have uploads between base and head.
+        :return: Queryset of core.models.Commit objects
         """
         commit_ids = [commit["commitid"] for commit in self.git_commits]
         commits_queryset = Commit.objects.filter(
@@ -613,20 +771,195 @@ class FlagComparison(object):
         self.comparison = comparison
         self.flag_name = flag_name
 
-    @property
+    @cached_property
     def head_report(self):
         return self.comparison.head_report.flags.get(self.flag_name)
 
-    @property
+    @cached_property
     def base_report(self):
         return self.comparison.base_report.flags.get(self.flag_name)
 
-    @property
+    @cached_property
     def diff_totals(self):
         if self.head_report is None:
             return None
         git_comparison = self.comparison.git_comparison
         return self.head_report.apply_diff(git_comparison["diff"])
+
+
+@dataclass
+class ImpactedFile:
+    file_name: str
+    base_name: str
+    head_name: str
+    base_coverage: ReportTotals
+    head_coverage: ReportTotals
+    patch_coverage: ReportTotals
+    change_coverage: float
+    misses_in_comparison: int
+
+
+class ImpactedFileParameter(enum.Enum):
+    FILE_NAME = "file_name"
+    CHANGE_COVERAGE = "change_coverage"
+    HEAD_COVERAGE = "head_coverage"
+    MISSES_IN_COMPARISON = "misses_in_comparison"
+    PATCH_COVERAGE = "patch_coverage"
+
+
+"""
+This class creates helper methods relevant to the report created for comparison between two commits.
+
+This class takes an existing comparison as the parameter and outputs logic relevant to any contents within it.
+"""
+
+
+class ComparisonReport(object):
+    def __init__(self, comparison):
+        self.comparison = comparison
+
+    @cached_property
+    def files(self):
+        if not self.comparison.report_storage_path:
+            return []
+        report_data = self.get_comparison_data_from_archive()
+        files = report_data.get("files", [])
+
+        return files
+
+    def file(self, path):
+        for file in self.files:
+            if file["head_name"] == path:
+                return file
+
+    def impacted_file(self, path):
+        impacted_file = self.file(path)
+        return self.deserialize_file(impacted_file)
+
+    @cached_property
+    def impacted_files(self):
+        impacted_files = self.files
+        return [self.deserialize_file(file) for file in impacted_files]
+
+    @cached_property
+    def impacted_files_with_unintended_changes(self):
+        impacted_files = [file for file in self.files if self.has_changes(file)]
+
+        return [self.deserialize_file(file) for file in impacted_files]
+
+    @cached_property
+    def impacted_files_with_direct_changes(self):
+        impacted_files = [file for file in self.files if self.has_diff(file)]
+
+        return [self.deserialize_file(file) for file in impacted_files]
+
+    """
+    Fetches contents of the report
+    """
+
+    def get_comparison_data_from_archive(self):
+        repository = self.comparison.compare_commit.repository
+        archive_service = ArchiveService(repository)
+        try:
+            data = archive_service.read_file(self.comparison.report_storage_path)
+            return json.loads(data)
+        except:
+            log.error(
+                "ComparisonReport - couldnt fetch data from storage", exc_info=True
+            )
+            return {}
+
+    """
+    Aggregates hits, misses and partials correspondent to the diff
+    """
+
+    def compute_patch_per_file(self, file):
+        added_diff_coverage = file.get("added_diff_coverage", [])
+        if not added_diff_coverage:
+            return None
+        patch_coverage = {"hits": 0, "misses": 0, "partials": 0}
+        for added_coverage in added_diff_coverage:
+            [_, type_coverage] = added_coverage
+            if type_coverage == "h":
+                patch_coverage["hits"] += 1
+            if type_coverage == "m":
+                patch_coverage["misses"] += 1
+            if type_coverage == "p":
+                patch_coverage["partials"] += 1
+        return patch_coverage
+
+    def deserialize_totals(self, file, key):
+        if not file.get(key):
+            return
+        # convert dict to ReportTotals and compute the coverage
+        totals = ReportTotals(**file[key])
+        nb_branches = totals.hits + totals.misses + totals.partials
+        totals.coverage = (100 * totals.hits / nb_branches) if nb_branches > 0 else None
+        file[key] = totals
+
+    def calculate_misses_in_comparison(self, file):
+        total_misses = 0
+        diff_coverage = file["added_diff_coverage"] or []
+        unexpected_line_changes = file["unexpected_line_changes"] or []
+
+        for line_number, line_coverage_value in diff_coverage:
+            if line_coverage_value == "m":
+                total_misses += 1
+
+        for [base, [head_line_number, head_coverage_value]] in unexpected_line_changes:
+            if head_coverage_value == "m":
+                total_misses += 1
+        return total_misses
+
+    """
+    Extracts relevant data from the fiels to be exposed as an impacted file
+    """
+
+    def deserialize_file(self, file):
+        file["patch_coverage"] = self.compute_patch_per_file(file)
+        self.deserialize_totals(file, "base_coverage")
+        self.deserialize_totals(file, "head_coverage")
+        self.deserialize_totals(file, "patch_coverage")
+        change_coverage = self.calculate_change(
+            file["head_coverage"], file["base_coverage"]
+        )
+        file_name = self.get_file_name_from_file_path(file["head_name"])
+        misses_in_comparison = self.calculate_misses_in_comparison(file)
+        return ImpactedFile(
+            file_name=file_name,
+            head_name=file["head_name"],
+            base_name=file["base_name"],
+            head_coverage=file["head_coverage"],
+            base_coverage=file["base_coverage"],
+            patch_coverage=file["patch_coverage"],
+            change_coverage=change_coverage,
+            misses_in_comparison=misses_in_comparison,
+        )
+
+    # TODO: I think this can be a function located elsewhere
+    def calculate_change(self, head_coverage, compared_to_coverage):
+        if head_coverage and compared_to_coverage:
+            return float(head_coverage.coverage - compared_to_coverage.coverage)
+        # if not head_coverage:
+        #     # return there is no head coverage
+        # if not compared_to_coverage:
+        #     # return there is no base coverage
+        return None
+
+    def get_file_name_from_file_path(self, file_path):
+        parts = file_path.split("/")
+        return parts[-1]
+
+    def has_diff(self, file):
+        return (
+            bool(file.get("removed_diff_coverage"))
+            or bool(file.get("added_diff_coverage"))
+            or file.get("file_was_removed_by_diff")
+            or file.get("file_was_added_by_diff")
+        )
+
+    def has_changes(self, file):
+        return bool(file.get("unexpected_line_changes"))
 
 
 class PullRequestComparison(Comparison):
@@ -638,22 +971,33 @@ class PullRequestComparison(Comparison):
 
     def __init__(self, user, pull):
         self.pull = pull
+        super().__init__(
+            user=user,
+            # these are lazy loaded in the property methods below
+            base_commit=None,
+            head_commit=None,
+        )
 
+    @cached_property
+    def base_commit(self):
         try:
-            super().__init__(
-                user=user,
-                base_commit=Commit.objects.get(
-                    repository=self.pull.repository,
-                    commitid=self.pull.compared_to
-                    if self.is_pseudo_comparison
-                    else pull.base,
-                ),
-                head_commit=Commit.objects.get(
-                    repository=self.pull.repository, commitid=pull.head
-                ),
+            return Commit.objects.defer("report").get(
+                repository=self.pull.repository,
+                commitid=self.pull.compared_to
+                if self.is_pseudo_comparison
+                else self.pull.base,
             )
         except Commit.DoesNotExist:
-            raise MissingComparisonCommit()
+            raise MissingComparisonCommit("Missing base commit")
+
+    @cached_property
+    def head_commit(self):
+        try:
+            return Commit.objects.defer("report").get(
+                repository=self.pull.repository, commitid=self.pull.head
+            )
+        except Commit.DoesNotExist:
+            raise MissingComparisonCommit("Missing head commit")
 
     @cached_property
     def _files_with_changes_hash_key(self):
@@ -793,3 +1137,90 @@ class PullRequestComparison(Comparison):
 
     def update_base_report_with_pseudo_diff(self):
         self.base_report.shift_lines_by_diff(self.pseudo_diff, forward=True)
+
+
+class CommitComparisonService:
+    """
+    Utilities for determining whether a commit comparison needs to be recomputed
+    (and enqueueing that recompute when necessary)
+    """
+
+    def __init__(self, commit_comparison: CommitComparison):
+        self.commit_comparison = commit_comparison
+
+    @cached_property
+    def base_commit(self):
+        if "base_commit" not in self.commit_comparison._state.fields_cache:
+            # base_commit is already preloaded
+            self.commit_comparison.base_commit = self._load_commit(
+                self.commit_comparison.base_commit_id
+            )
+        return self.commit_comparison.base_commit
+
+    @cached_property
+    def compare_commit(self):
+        if "compare_commit" not in self.commit_comparison._state.fields_cache:
+            # compare_commit is already preloaded
+            self.commit_comparison.compare_commit = self._load_commit(
+                self.commit_comparison.compare_commit_id
+            )
+        return self.commit_comparison.compare_commit
+
+    def needs_recompute(self) -> bool:
+        if self._last_updated_before(self.compare_commit.updatestamp):
+            return True
+
+        if self._last_updated_before(self.base_commit.updatestamp):
+            return True
+
+        compare_commit_details = self._commit_report_details(self.compare_commit)
+        if compare_commit_details is not None and self._last_updated_before(
+            compare_commit_details.updated_at
+        ):
+            return True
+
+        base_commit_details = self._commit_report_details(self.base_commit)
+        if base_commit_details is not None and self._last_updated_before(
+            base_commit_details.updated_at
+        ):
+            return True
+
+        return False
+
+    def _last_updated_before(self, timestamp: datetime) -> bool:
+        """
+        Returns true if the given timestamp occurred after the commit comparison's last update
+        """
+        timezone = pytz.utc
+        if not timestamp:
+            return False
+
+        if timestamp.tzinfo is None:
+            timestamp = timezone.localize(timestamp)
+        else:
+            timestamp = timezone.normalize(timestamp)
+
+        return timezone.normalize(self.commit_comparison.updated_at) < timestamp
+
+    def _commit_report_details(self, commit: Commit) -> Optional[ReportDetails]:
+        # CommitDetails records are updated by the worker every time a new upload is processed.
+        # We can use the `updated_at` timestamp as a proxy for when a report was last updated.
+        # These are expected to have been preloaded.
+        if hasattr(commit, "commitreport") and hasattr(
+            commit.commitreport, "reportdetails"
+        ):
+            return commit.commitreport.reportdetails
+
+    def _load_commit(self, commit_id: int) -> Optional[Commit]:
+        prefetch = Prefetch(
+            "reports",
+            queryset=CommitReport.objects.select_related("reportdetails").defer(
+                "reportdetails__files_array"
+            ),
+        )
+        return (
+            Commit.objects.filter(pk=commit_id)
+            .prefetch_related(prefetch)
+            .defer("report")
+            .first()
+        )

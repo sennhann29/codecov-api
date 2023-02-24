@@ -1,5 +1,4 @@
 import asyncio
-from unittest.mock import patch
 
 from django.test import TransactionTestCase
 
@@ -23,7 +22,7 @@ class CompareCommandsTest(TransactionTestCase):
             repository=self.parent_commit.repository,
         )
         self.comparison = CommitComparisonFactory(
-            base_commit=self.parent_commit, compare_commit=self.commit,
+            base_commit=self.parent_commit, compare_commit=self.commit
         )
         self.pull = PullFactory(
             repository=self.commit.repository,
@@ -45,21 +44,8 @@ class CompareCommandsTest(TransactionTestCase):
             report=CommitReportFactory(commit=commit_with_coverage), coverage=78.38
         )
         self.comparison_with_coverage = CommitComparisonFactory(
-            base_commit=parent_commit_with_coverage,
-            compare_commit=commit_with_coverage,
+            base_commit=parent_commit_with_coverage, compare_commit=commit_with_coverage
         )
-
-    async def test_compare_commit_when_no_parents(self):
-        compare = await self.command.compare_commit_with_parent(self.parent_commit)
-        assert compare is None
-
-    async def test_compare_commit_when_parents(self):
-        compare = await self.command.compare_commit_with_parent(self.commit)
-        assert compare is not None
-
-    async def test_compare_pull_request(self):
-        compare = await self.command.compare_pull_request(self.pull)
-        assert compare is not None
 
     async def test_change_with_parent_without_coverage(self):
         change = await self.command.change_with_parent(self.comparison)
@@ -68,8 +54,3 @@ class CompareCommandsTest(TransactionTestCase):
     async def test_change_with_parent_with_coverage(self):
         change = await self.command.change_with_parent(self.comparison_with_coverage)
         assert float(change) == 15.06
-
-    @patch("compare.commands.compare.compare.GetImpactedFilesInteractor.execute")
-    def test_get_impacted_files_delegrate_to_interactor(self, interactor_mock):
-        self.command.get_impacted_files(self.comparison)
-        interactor_mock.assert_called_once_with(self.comparison)

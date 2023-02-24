@@ -1,15 +1,15 @@
 import os
+from urllib.parse import urlparse
 
+import asgiref.sync as sync
+from asgiref.sync import SyncToAsync
 from corsheaders.defaults import default_headers
+from django.db import close_old_connections
 
 from utils.config import SettingsModule, get_config, get_settings_module
 
 # SECURITY WARNING: keep the secret key used in production secret!
-# TODO: get this out of source control
-SECRET_KEY = "^fe*h^lqve%4)tl)0*rvx^zax$_5zu$7jg6o@2y!!-4*l^tne5"
-
-
-YAML_SECRET_KEY = b"]\xbb\x13\xf9}\xb3\xb7\x03)*0Kv\xb2\xcet"
+SECRET_KEY = "*"  # Unused
 
 
 AUTH_USER_MODEL = "codecov_auth.Owner"
@@ -24,18 +24,22 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "django_filters",
+    "drf_spectacular",
     "ariadne_django",
     "corsheaders",
     "rest_framework",
     "billing",
-    "core",
     "codecov_auth",
-    "reports",
-    "internal_api",
-    "graphql_api",
+    "api",
     "compare",
+    "core",
+    "graphql_api",
+    "labelanalysis",
     "profiling",
-    "public_api",
+    "reports",
+    "staticanalysis",
+    "timeseries",
 ]
 
 MIDDLEWARE = [
@@ -51,7 +55,7 @@ MIDDLEWARE = [
 ]
 
 AUTHENTICATION_BACKENDS = [
-    "codecov_auth.authentication.CodecovTokenAuthenticationBackend",
+    "codecov_auth.authentication.CodecovTokenAuthenticationBackend"
 ]
 
 ROOT_URLCONF = "codecov.urls"
@@ -67,21 +71,119 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
-            ],
+            ]
         },
-    },
+    }
 ]
 
 WSGI_APPLICATION = "codecov.wsgi.application"
 
-
 # Database
 # https://docs.djangoproject.com/en/2.1/ref/settings/#databases
-DATABASE_USER = get_config("services", "database", "username", default="postgres")
-DATABASE_NAME = get_config("services", "database", "name", default="postgres")
-DATABASE_PASSWORD = get_config("services", "database", "password", default="postgres")
-DATABASE_HOST = get_config("services", "database", "host", default="postgres")
-DATABASE_PORT = get_config("services", "database", "port", default=5432)
+
+db_url = get_config("services", "database_url")
+if db_url:
+    db_conf = urlparse(db_url)
+    DATABASE_USER = db_conf.username
+    DATABASE_NAME = db_conf.path.replace("/", "")
+    DATABASE_PASSWORD = db_conf.password
+    DATABASE_HOST = db_conf.hostname
+    DATABASE_PORT = db_conf.port
+else:
+    DATABASE_USER = get_config("services", "database", "username", default="postgres")
+    DATABASE_NAME = get_config("services", "database", "name", default="postgres")
+    DATABASE_PASSWORD = get_config(
+        "services", "database", "password", default="postgres"
+    )
+    DATABASE_HOST = get_config("services", "database", "host", default="postgres")
+    DATABASE_PORT = get_config("services", "database", "port", default=5432)
+
+DATABASE_READ_REPLICA_ENABLED = get_config(
+    "setup", "database", "read_replica_enabled", default=False
+)
+
+db_read_url = get_config("services", "database_read_url")
+if db_read_url:
+    db_conf = urlparse(db_read_url)
+    DATABASE_READ_USER = db_conf.username
+    DATABASE_READ_NAME = db_conf.path.replace("/", "")
+    DATABASE_READ_PASSWORD = db_conf.password
+    DATABASE_READ_HOST = db_conf.hostname
+    DATABASE_READ_PORT = db_conf.port
+else:
+    DATABASE_READ_USER = get_config(
+        "services", "database_read", "username", default="postgres"
+    )
+    DATABASE_READ_NAME = get_config(
+        "services", "database_read", "name", default="postgres"
+    )
+    DATABASE_READ_PASSWORD = get_config(
+        "services", "database_read", "password", default="postgres"
+    )
+    DATABASE_READ_HOST = get_config(
+        "services", "database_read", "host", default="postgres"
+    )
+    DATABASE_READ_PORT = get_config("services", "database_read", "port", default=5432)
+
+TIMESERIES_ENABLED = get_config("setup", "timeseries", "enabled", default=False)
+TIMESERIES_REAL_TIME_AGGREGATES = get_config(
+    "setup", "timeseries", "real_time_aggregates", default=False
+)
+
+timeseries_database_url = get_config("services", "timeseries_database_url")
+if timeseries_database_url:
+    timeseries_database_conf = urlparse(timeseries_database_url)
+    TIMESERIES_DATABASE_USER = timeseries_database_conf.username
+    TIMESERIES_DATABASE_NAME = timeseries_database_conf.path.replace("/", "")
+    TIMESERIES_DATABASE_PASSWORD = timeseries_database_conf.password
+    TIMESERIES_DATABASE_HOST = timeseries_database_conf.hostname
+    TIMESERIES_DATABASE_PORT = timeseries_database_conf.port
+else:
+    TIMESERIES_DATABASE_USER = get_config(
+        "services", "timeseries_database", "username", default="postgres"
+    )
+    TIMESERIES_DATABASE_NAME = get_config(
+        "services", "timeseries_database", "name", default="postgres"
+    )
+    TIMESERIES_DATABASE_PASSWORD = get_config(
+        "services", "timeseries_database", "password", default="postgres"
+    )
+    TIMESERIES_DATABASE_HOST = get_config(
+        "services", "timeseries_database", "host", default="timescale"
+    )
+    TIMESERIES_DATABASE_PORT = get_config(
+        "services", "timeseries_database", "port", default=5432
+    )
+
+TIMESERIES_DATABASE_READ_REPLICA_ENABLED = get_config(
+    "setup", "timeseries", "read_replica_enabled", default=False
+)
+
+timeseries_database_read_url = get_config("services", "timeseries_database_read_url")
+if timeseries_database_read_url:
+    timeseries_database_conf = urlparse(timeseries_database_read_url)
+    TIMESERIES_DATABASE_READ_USER = timeseries_database_conf.username
+    TIMESERIES_DATABASE_READ_NAME = timeseries_database_conf.path.replace("/", "")
+    TIMESERIES_DATABASE_READ_PASSWORD = timeseries_database_conf.password
+    TIMESERIES_DATABASE_READ_HOST = timeseries_database_conf.hostname
+    TIMESERIES_DATABASE_READ_PORT = timeseries_database_conf.port
+else:
+    TIMESERIES_DATABASE_READ_USER = get_config(
+        "services", "timeseries_database_read", "username", default="postgres"
+    )
+    TIMESERIES_DATABASE_READ_NAME = get_config(
+        "services", "timeseries_database_read", "name", default="postgres"
+    )
+    TIMESERIES_DATABASE_READ_PASSWORD = get_config(
+        "services", "timeseries_database_read", "password", default="postgres"
+    )
+    TIMESERIES_DATABASE_READ_HOST = get_config(
+        "services", "timeseries_database_read", "host", default="timescale"
+    )
+    TIMESERIES_DATABASE_READ_PORT = get_config(
+        "services", "timeseries_database_read", "port", default=5432
+    )
+
 # this is the time in seconds django decides to keep the connection open after the request
 # the default is 0 seconds, meaning django closes the connection after every request
 # https://docs.djangoproject.com/en/3.1/ref/settings/#conn-max-age
@@ -98,16 +200,52 @@ DATABASES = {
         "CONN_MAX_AGE": CONN_MAX_AGE,
     }
 }
+
+if DATABASE_READ_REPLICA_ENABLED:
+    DATABASES["default_read"] = {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": DATABASE_READ_NAME,
+        "USER": DATABASE_READ_USER,
+        "PASSWORD": DATABASE_READ_PASSWORD,
+        "HOST": DATABASE_READ_HOST,
+        "PORT": DATABASE_READ_PORT,
+        "CONN_MAX_AGE": CONN_MAX_AGE,
+    }
+
+if TIMESERIES_ENABLED:
+    DATABASES["timeseries"] = {
+        "ENGINE": "django.db.backends.postgresql",
+        "NAME": TIMESERIES_DATABASE_NAME,
+        "USER": TIMESERIES_DATABASE_USER,
+        "PASSWORD": TIMESERIES_DATABASE_PASSWORD,
+        "HOST": TIMESERIES_DATABASE_HOST,
+        "PORT": TIMESERIES_DATABASE_PORT,
+        "CONN_MAX_AGE": CONN_MAX_AGE,
+    }
+
+    if TIMESERIES_DATABASE_READ_REPLICA_ENABLED:
+        DATABASES["timeseries_read"] = {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": TIMESERIES_DATABASE_READ_NAME,
+            "USER": TIMESERIES_DATABASE_READ_USER,
+            "PASSWORD": TIMESERIES_DATABASE_READ_PASSWORD,
+            "HOST": TIMESERIES_DATABASE_READ_HOST,
+            "PORT": TIMESERIES_DATABASE_READ_PORT,
+            "CONN_MAX_AGE": CONN_MAX_AGE,
+        }
+
+DATABASE_ROUTERS = ["codecov.db.DatabaseRouter"]
+
 # Password validation
 # https://docs.djangoproject.com/en/2.1/ref/settings/#auth-password-validators
 
 AUTH_PASSWORD_VALIDATORS = [
     {
-        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
+        "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"
     },
-    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",},
-    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",},
-    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",},
+    {"NAME": "django.contrib.auth.password_validation.MinimumLengthValidator"},
+    {"NAME": "django.contrib.auth.password_validation.CommonPasswordValidator"},
+    {"NAME": "django.contrib.auth.password_validation.NumericPasswordValidator"},
 ]
 
 
@@ -117,14 +255,29 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "codecov_auth.authentication.CodecovTokenAuthentication",
+        "codecov_auth.authentication.UserTokenAuthentication",
         "rest_framework.authentication.BasicAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ),
-    "DEFAULT_PAGINATION_CLASS": "internal_api.pagination.StandardPageNumberPagination",
+    "DEFAULT_PAGINATION_CLASS": "api.shared.pagination.StandardPageNumberPagination",
     "DEFAULT_FILTER_BACKENDS": ("django_filters.rest_framework.DjangoFilterBackend",),
     "PAGE_SIZE": 20,
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
+# API auto-documentation settings
+# https://drf-spectacular.readthedocs.io/en/latest/settings.html
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Codecov API",
+    "DESCRIPTION": "Public Codecov API",
+    "VERSION": "2.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "SERVE_URLCONF": "api.public.v2.urls",
+    "SERVERS": [{"url": "/api/v2"}],
+    "AUTHENTICATION_WHITELIST": [
+        "codecov_auth.authentication.UserTokenAuthentication",
+    ],
+}
 
 # Internationalization
 # https://docs.djangoproject.com/en/2.1/topics/i18n/
@@ -169,7 +322,7 @@ LOGGING = {
             else "json",
             "class": "logging.StreamHandler",
             "stream": "ext://sys.stdout",  # Default is stderr
-        },
+        }
     },
     "loggers": {},
 }
@@ -187,19 +340,45 @@ COOKIES_DOMAIN = get_config("setup", "http", "cookies_domain", default=".codecov
 SESSION_COOKIE_DOMAIN = get_config(
     "setup", "http", "cookies_domain", default=".codecov.io"
 )
+# Defaulting to 'not found' as opposed to 'None' to avoid None somehow getting through as a bearer token. Token strings can't have spaces, hence 'not found' can never be forced as a header input value
+SUPER_API_TOKEN = os.getenv("SUPER_API_TOKEN", "not found")
 
 CIRCLECI_TOKEN = get_config("circleci", "token")
 
 GITHUB_CLIENT_ID = get_config("github", "client_id")
 GITHUB_CLIENT_SECRET = get_config("github", "client_secret")
 GITHUB_BOT_KEY = get_config("github", "bot", "key")
+GITHUB_TOKENLESS_BOT_KEY = get_config(
+    "github", "bots", "tokenless", "key", default=GITHUB_BOT_KEY
+)
 GITHUB_ACTIONS_TOKEN = get_config("github", "actions_token")
+
+GITHUB_ENTERPRISE_URL = get_config("github_enterprise", "url")
+GITHUB_ENTERPRISE_API_URL = get_config("github_enterprise", "api_url")
+GITHUB_ENTERPRISE_CLIENT_ID = get_config("github_enterprise", "client_id")
+GITHUB_ENTERPRISE_CLIENT_SECRET = get_config("github_enterprise", "client_secret")
+GITHUB_ENTERPRISE_BOT_KEY = get_config("github_enterprise", "bot", "key")
+GITHUB_ENTERPRISE_TOKENLESS_BOT_KEY = get_config(
+    "github_enterprise", "bots", "tokenless", "key", default=GITHUB_ENTERPRISE_BOT_KEY
+)
+GITHUB_ENTERPRISE_ACTIONS_TOKEN = get_config("github_enterprise", "actions_token")
 
 BITBUCKET_CLIENT_ID = get_config("bitbucket", "client_id")
 BITBUCKET_CLIENT_SECRET = get_config("bitbucket", "client_secret")
 BITBUCKET_BOT_KEY = get_config("bitbucket", "bot", "key")
+BITBUCKET_TOKENLESS_BOT_KEY = get_config(
+    "bitbucket", "bots", "tokenless", "key", default=BITBUCKET_BOT_KEY
+)
 BITBUCKET_REDIRECT_URI = get_config(
     "bitbucket", "redirect_uri", default="https://codecov.io/login/bitbucket"
+)
+
+BITBUCKET_SERVER_URL = get_config("bitbucket_server", "url")
+BITBUCKET_SERVER_CLIENT_ID = get_config("bitbucket_server", "client_id")
+BITBUCKET_SERVER_CLIENT_SECRET = get_config("bitbucket_server", "client_secret")
+BITBUCKET_SERVER_BOT_KEY = get_config("bitbucket_server", "bot", "key")
+BITBUCKET_SERVER_TOKENLESS_BOT_KEY = get_config(
+    "bitbucket_server", "bots", "tokenless", "key", default=BITBUCKET_SERVER_BOT_KEY
 )
 
 GITLAB_CLIENT_ID = get_config("gitlab", "client_id")
@@ -208,16 +387,32 @@ GITLAB_REDIRECT_URI = get_config(
     "gitlab", "redirect_uri", default="https://codecov.io/login/gitlab"
 )
 GITLAB_BOT_KEY = get_config("gitlab", "bot", "key")
+GITLAB_TOKENLESS_BOT_KEY = get_config(
+    "gitlab", "bots", "tokenless", "key", default=GITLAB_BOT_KEY
+)
 
+
+GITLAB_ENTERPRISE_CLIENT_ID = get_config("gitlab_enterprise", "client_id")
+GITLAB_ENTERPRISE_CLIENT_SECRET = get_config("gitlab_enterprise", "client_secret")
+GITLAB_ENTERPRISE_REDIRECT_URI = get_config(
+    "gitlab_enterprise",
+    "redirect_uri",
+    default="https://codecov.io/login/gitlab_enterprise",
+)
+GITLAB_ENTERPRISE_BOT_KEY = get_config("gitlab_enterprise", "bot", "key")
+GITLAB_ENTERPRISE_TOKENLESS_BOT_KEY = get_config(
+    "gitlab_enterprise", "bots", "tokenless", "key", default=GITLAB_ENTERPRISE_BOT_KEY
+)
+GITLAB_ENTERPRISE_URL = get_config("gitlab_enterprise", "url")
+GITLAB_ENTERPRISE_API_URL = get_config("gitlab_enterprise", "api_url")
 
 SEGMENT_API_KEY = get_config("setup", "segment", "key", default=None)
 SEGMENT_ENABLED = get_config("setup", "segment", "enabled", default=False) and not bool(
     get_config("setup", "enterprise_license", default=False)
 )
-
-CORS_ALLOW_HEADERS = list(default_headers) + [
-    "token-type",
-]
+SENTRY_ENV = False
+SENTRY_SAMPLE_RATE = 1.0
+CORS_ALLOW_HEADERS = list(default_headers) + ["token-type"]
 
 SKIP_RISKY_MIGRATION_STEPS = get_config("migrations", "skip_risky_steps", default=False)
 
@@ -240,3 +435,6 @@ CORS_ALLOWED_ORIGINS = []
 GRAPHQL_PLAYGROUND = False
 
 UPLOAD_THROTTLING_ENABLED = True
+MAX_UPLOAD_LIMIT = get_config("setup", "max_sessions", default=150)
+
+CANNY_SSO_PRIVATE_TOKEN = get_config("canny", "sso_private_token", default="")

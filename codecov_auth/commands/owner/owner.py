@@ -2,13 +2,19 @@ from codecov.commands.base import BaseCommand
 from codecov_auth.models import Owner, Session
 
 from .interactors.create_api_token import CreateApiTokenInteractor
+from .interactors.create_user_token import CreateUserTokenInteractor
 from .interactors.delete_session import DeleteSessionInteractor
 from .interactors.fetch_owner import FetchOwnerInteractor
+from .interactors.get_is_current_user_an_admin import GetIsCurrentUserAnAdminInteractor
+from .interactors.get_org_upload_token import GetOrgUploadToken
 from .interactors.get_uploads_number_per_user import GetUploadsNumberPerUserInteractor
 from .interactors.is_syncing import IsSyncingInteractor
 from .interactors.onboard_user import OnboardUserInteractor
+from .interactors.regenerate_org_upload_token import RegenerateOrgUploadTokenInteractor
+from .interactors.revoke_user_token import RevokeUserTokenInteractor
 from .interactors.set_yaml_on_owner import SetYamlOnOwnerInteractor
 from .interactors.trigger_sync import TriggerSyncInteractor
+from .interactors.update_default_organization import UpdateDefaultOrganizationInteractor
 from .interactors.update_profile import UpdateProfileInteractor
 
 
@@ -19,11 +25,22 @@ class OwnerCommands(BaseCommand):
     def delete_session(self, sessionid):
         return self.get_interactor(DeleteSessionInteractor).execute(sessionid)
 
+    def create_user_token(self, name, token_type=None):
+        return self.get_interactor(CreateUserTokenInteractor).execute(name, token_type)
+
+    def revoke_user_token(self, tokenid):
+        return self.get_interactor(RevokeUserTokenInteractor).execute(tokenid)
+
     def set_yaml_on_owner(self, username, yaml):
         return self.get_interactor(SetYamlOnOwnerInteractor).execute(username, yaml)
 
     def update_profile(self, **kwargs):
         return self.get_interactor(UpdateProfileInteractor).execute(**kwargs)
+
+    def update_default_organization(self, **kwargs):
+        return self.get_interactor(UpdateDefaultOrganizationInteractor).execute(
+            **kwargs
+        )
 
     def fetch_owner(self, username):
         return self.get_interactor(FetchOwnerInteractor).execute(username)
@@ -39,3 +56,14 @@ class OwnerCommands(BaseCommand):
 
     def get_uploads_number_per_user(self, owner):
         return self.get_interactor(GetUploadsNumberPerUserInteractor).execute(owner)
+
+    def get_is_current_user_an_admin(self, owner, current_user):
+        return self.get_interactor(GetIsCurrentUserAnAdminInteractor).execute(
+            owner, current_user
+        )
+
+    def get_org_upload_token(self, owner):
+        return self.get_interactor(GetOrgUploadToken).execute(owner)
+
+    def regenerate_org_upload_token(self, owner):
+        return self.get_interactor(RegenerateOrgUploadTokenInteractor).execute(owner)

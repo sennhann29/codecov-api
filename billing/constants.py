@@ -35,7 +35,7 @@ NON_PR_AUTHOR_PAID_USER_PLAN_REPRESENTATIONS = {
         "billing_rate": "monthly",
         "base_unit_price": 12,
         "benefits": [
-            "Configureable # of users",
+            "Configurable # of users",
             "Unlimited public repositories",
             "Unlimited private repositories",
             "Priority Support",
@@ -44,10 +44,10 @@ NON_PR_AUTHOR_PAID_USER_PLAN_REPRESENTATIONS = {
     "users-inappy": {
         "marketing_name": "Pro Team",
         "value": "users-inappy",
-        "billing_rate": "annual",
+        "billing_rate": "annually",
         "base_unit_price": 10,
         "benefits": [
-            "Configureable # of users",
+            "Configurable # of users",
             "Unlimited public repositories",
             "Unlimited private repositories",
             "Priority Support",
@@ -63,7 +63,7 @@ PR_AUTHOR_PAID_USER_PLAN_REPRESENTATIONS = {
         "billing_rate": "monthly",
         "base_unit_price": 12,
         "benefits": [
-            "Configureable # of users",
+            "Configurable # of users",
             "Unlimited public repositories",
             "Unlimited private repositories",
             "Priority Support",
@@ -72,10 +72,38 @@ PR_AUTHOR_PAID_USER_PLAN_REPRESENTATIONS = {
     "users-pr-inappy": {
         "marketing_name": "Pro Team",
         "value": "users-pr-inappy",
-        "billing_rate": "annual",
+        "billing_rate": "annually",
         "base_unit_price": 10,
         "benefits": [
-            "Configureable # of users",
+            "Configurable # of users",
+            "Unlimited public repositories",
+            "Unlimited private repositories",
+            "Priority Support",
+        ],
+    },
+}
+
+# TODO: Update these values
+ENTERPRISE_CLOUD_USER_PLAN_REPRESENTATIONS = {
+    "users-enterprisem": {
+        "marketing_name": "Enterprise Cloud",
+        "value": "users-enterprisem",
+        "billing_rate": "monthly",
+        "base_unit_price": 12,  # Update me
+        "benefits": [
+            "Configurable # of users",
+            "Unlimited public repositories",
+            "Unlimited private repositories",
+            "Priority Support",
+        ],
+    },
+    "users-enterprisey": {
+        "marketing_name": "Enterprise Cloud",
+        "value": "users-enterprisey",
+        "billing_rate": "annually",
+        "base_unit_price": 10,  # Update me
+        "benefits": [
+            "Configurable # of users",
             "Unlimited public repositories",
             "Unlimited private repositories",
             "Priority Support",
@@ -90,7 +118,7 @@ GHM_PLAN_REPRESENTATION = {
         "billing_rate": None,
         "base_unit_price": 12,
         "benefits": [
-            "Configureable # of users",
+            "Configurable # of users",
             "Unlimited public repositories",
             "Unlimited private repositories",
         ],
@@ -124,6 +152,7 @@ USER_PLAN_REPRESENTATIONS = {
     **NON_PR_AUTHOR_PAID_USER_PLAN_REPRESENTATIONS,
     **PR_AUTHOR_PAID_USER_PLAN_REPRESENTATIONS,
     **GHM_PLAN_REPRESENTATION,
+    **ENTERPRISE_CLOUD_USER_PLAN_REPRESENTATIONS,
 }
 
 FREE_PLAN_REPRESENTATIONS = {
@@ -179,3 +208,5 @@ CURRENTLY_OFFERED_PLANS = {
     },
     **PR_AUTHOR_PAID_USER_PLAN_REPRESENTATIONS,
 }
+
+REMOVED_INVOICE_STATUSES = ["draft", "void"]

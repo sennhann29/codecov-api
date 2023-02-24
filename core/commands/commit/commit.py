@@ -1,21 +1,16 @@
 from codecov.commands.base import BaseCommand
-from services.archive import ReportService
-from services.repo_providers import RepoProviderService
 
-from .interactors.fetch_commit import FetchCommitInteractor
 from .interactors.fetch_commits import FetchCommitsInteractor
 from .interactors.fetch_totals import FetchTotalsInteractor
+from .interactors.get_commit_errors import GetCommitErrorsInteractor
 from .interactors.get_file_content import GetFileContentInteractor
 from .interactors.get_final_yaml import GetFinalYamlInteractor
-from .interactors.get_uploads_of_commit import GetUploadsOfCommitInteractor
+from .interactors.get_uploads_number import GetUploadsNumberInteractor
 
 
 class CommitCommands(BaseCommand):
     def get_file_content(self, commit, path):
         return self.get_interactor(GetFileContentInteractor).execute(commit, path)
-
-    def fetch_commit(self, repository, commit_id):
-        return self.get_interactor(FetchCommitInteractor).execute(repository, commit_id)
 
     def fetch_commits(self, repository, filters):
         return self.get_interactor(FetchCommitsInteractor).execute(repository, filters)
@@ -26,5 +21,10 @@ class CommitCommands(BaseCommand):
     def get_final_yaml(self, commit):
         return self.get_interactor(GetFinalYamlInteractor).execute(commit)
 
-    def get_uploads_of_commit(self, commit):
-        return self.get_interactor(GetUploadsOfCommitInteractor).execute(commit)
+    def get_commit_errors(self, commit, error_type):
+        return self.get_interactor(GetCommitErrorsInteractor).execute(
+            commit, error_type
+        )
+
+    def get_uploads_number(self, commit):
+        return self.get_interactor(GetUploadsNumberInteractor).execute(commit)

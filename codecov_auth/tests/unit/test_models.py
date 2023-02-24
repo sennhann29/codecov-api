@@ -1,5 +1,8 @@
+import uuid
 from unittest.mock import patch
 
+import pytest
+from django.forms import ValidationError
 from django.test import TransactionTestCase
 
 from codecov_auth.models import (
@@ -10,9 +13,11 @@ from codecov_auth.models import (
     SERVICE_CODECOV_ENTERPRISE,
     SERVICE_GITHUB,
     SERVICE_GITHUB_ENTERPRISE,
+    OrganizationLevelToken,
     Service,
+    TokenTypeChoices,
 )
-from codecov_auth.tests.factories import OwnerFactory
+from codecov_auth.tests.factories import OrganizationLevelTokenFactory, OwnerFactory
 from core.tests.factories import RepositoryFactory
 
 
@@ -59,12 +64,33 @@ class TestOwnerModel(TransactionTestCase):
         assert self.owner.repo_credits == 1 + self.owner.free or 0
 
     def test_nb_active_private_repos(self):
-        RepositoryFactory(author=self.owner, active=True, private=True)
-        RepositoryFactory(author=self.owner, active=True, private=False)
-        RepositoryFactory(author=self.owner, active=False, private=True)
-        RepositoryFactory(author=self.owner, active=False, private=False)
+        owner = OwnerFactory()
+        RepositoryFactory(author=owner, active=True, private=True)
+        RepositoryFactory(author=owner, active=True, private=False)
+        RepositoryFactory(author=owner, active=False, private=True)
+        RepositoryFactory(author=owner, active=False, private=False)
 
-        assert self.owner.nb_active_private_repos == 1
+        assert owner.nb_active_private_repos == 1
+
+    def test_plan_is_null_when_validating_form(self):
+        owner = OwnerFactory()
+        owner.plan = ""
+        owner.stripe_customer_id = ""
+        owner.stripe_subscription_id = ""
+        owner.clean()
+        assert owner.plan == None
+        assert owner.stripe_customer_id == None
+        assert owner.stripe_subscription_id == None
+
+    def test_setting_staff_on_for_not_a_codecov_member(self):
+        user_not_part_of_codecov = OwnerFactory(email="user@notcodecov.io", staff=True)
+        with self.assertRaises(ValidationError):
+            user_not_part_of_codecov.clean()
+
+    def test_setting_staff_on_with_email_null(self):
+        user_with_null_email = OwnerFactory(email=None, staff=True)
+        with self.assertRaises(ValidationError):
+            user_with_null_email.clean()
 
     @patch("codecov_auth.models.get_config")
     def test_main_avatar_url_services(self, mock_get_config):
@@ -379,7 +405,9 @@ class TestOwnerModel(TransactionTestCase):
         self.owner.service = "gitlab"
         self.owner.save()
 
-        with self.assertNumQueries(3):
+        # The 4th query is from OrganizationLevelToken. There's a hook that rnus after Owner is saved
+        # To see if a org-wide token should be generated or deleted.
+        with self.assertNumQueries(4):
             assert self.owner.root_organization == root
 
         # cache the root organization id
@@ -444,3 +472,22 @@ class TestOwnerModel(TransactionTestCase):
         org.yaml = {"require_ci_to_pass": True}
         org.save()
         assert org.has_yaml is True
+
+
+class TestOrganizationLevelTokenModel(TransactionTestCase):
+    def test_cant_save_org_token_for_org_not_in_valid_plan(self):
+        owner = OwnerFactory(plan="users-basic")
+        owner.save()
+        token = OrganizationLevelToken(owner=owner)
+        with pytest.raises(ValidationError):
+            token.save()
+
+    def test_token_is_deleted_when_changing_user_plan(self):
+        owner = OwnerFactory(plan="users-enterprisem")
+        org_token = OrganizationLevelTokenFactory(owner=owner)
+        owner.save()
+        org_token.save()
+        assert OrganizationLevelToken.objects.filter(owner=owner).count() == 1
+        owner.plan = "users-basic"
+        owner.save()
+        assert OrganizationLevelToken.objects.filter(owner=owner).count() == 0

@@ -5,12 +5,14 @@ from datetime import datetime
 
 from django.contrib.postgres.fields import ArrayField, CITextField
 from django.db import models
+from django.forms import ValidationError
 from django.utils.functional import cached_property
 
+from codecov.models import BaseCodecovModel
 from services.archive import ReportService
 
 from .encoders import ReportJSONEncoder
-from .managers import RepositoryQuerySet
+from .managers import RepositoryManager
 
 
 class DateTimeWithoutTZField(models.DateTimeField):
@@ -53,11 +55,29 @@ class Repository(models.Model):
         SWIFT = "swift"
         OBJECTIVE_C = "objective-c"
         XTEND = "xtend"
+        TYPESCRIPT = "typescript"
+        HASKELL = "haskell"
+        RUST = "rust"
+        LUA = "lua"
+        MATLAB = "matlab"
+        ASSEMBLY = "assembly"
+        SCHEME = "scheme"
+        POWERSHELL = "powershell"
+        APEX = "apex"
+        VERILOG = "verilog"
+        COMMON_LISP = "common lisp"
+        ERLANG = "erlang"
+        JULIA = "julia"
+        PROLOG = "prolog"
+        VUE = "vue"
+        CPP = "c++"
+        C_SHARP = "c#"
+        F_SHARP = "f#"
 
     repoid = models.AutoField(primary_key=True)
     name = CITextField()
     author = models.ForeignKey(
-        "codecov_auth.Owner", db_column="ownerid", on_delete=models.CASCADE,
+        "codecov_auth.Owner", db_column="ownerid", on_delete=models.CASCADE
     )
     service_id = models.TextField()
     private = models.BooleanField()
@@ -86,6 +106,7 @@ class Repository(models.Model):
         null=True,
         on_delete=models.SET_NULL,
         related_name="bot_repos",
+        blank=True,
     )
     activated = models.BooleanField(null=True, default=False)
     deleted = models.BooleanField(default=False)
@@ -93,6 +114,12 @@ class Repository(models.Model):
     class Meta:
         db_table = "repos"
         ordering = ["-repoid"]
+        indexes = [
+            models.Index(
+                fields=["service_id", "author"],
+                name="repos_service_id_author",
+            ),
+        ]
         constraints = [
             models.UniqueConstraint(fields=["author", "name"], name="repos_slug"),
             models.UniqueConstraint(
@@ -101,7 +128,7 @@ class Repository(models.Model):
         ]
         verbose_name_plural = "Repositories"
 
-    objects = RepositoryQuerySet.as_manager()
+    objects = RepositoryManager()
 
     def __str__(self):
         return f"Repo<{self.author}/{self.name}>"
@@ -114,9 +141,14 @@ class Repository(models.Model):
         self.commits.all().delete()
         self.branches.all().delete()
         self.pull_requests.all().delete()
+        self.flags.all().delete()
         self.yaml = None
         self.cache = None
         self.save()
+
+    def clean(self):
+        if self.using_integration is None:
+            raise ValidationError("using_integration cannot be null")
 
 
 class Branch(models.Model):
@@ -143,6 +175,12 @@ class Branch(models.Model):
             models.UniqueConstraint(
                 fields=["name", "repository"], name="branches_repoid_branch"
             )
+        ]
+        indexes = [
+            models.Index(
+                fields=["repository", "-updatestamp"],
+                name="branches_repoid_updatestamp",
+            ),
         ]
 
 
@@ -226,9 +264,17 @@ class Commit(models.Model):
                 name="commits_repoid_timestamp_desc",
             ),
             models.Index(
+                fields=["repository", "branch", "state", "-timestamp"],
+                name="commits_repoid_branch_state_ts",
+            ),
+            models.Index(
                 fields=["repository", "pullid"],
                 name="commits_on_pull",
                 condition=~models.Q(deleted=True),
+            ),
+            models.Index(
+                fields=["repository", "pullid"],
+                name="all_commits_on_pull",
             ),
         ]
 
@@ -278,7 +324,11 @@ class Pull(models.Model):
                 fields=["repository"],
                 name="pulls_repoid_state_open",
                 condition=models.Q(state=PullStates.OPEN.value),
-            )
+            ),
+            models.Index(
+                fields=["author", "updatestamp"],
+                name="pulls_author_updatestamp",
+            ),
         ]
 
     def save(self, *args, **kwargs):
@@ -301,6 +351,7 @@ class CommitNotification(models.Model):
     class DecorationTypes(models.TextChoices):
         STANDARD = "standard"
         UPGRADE = "upgrade"
+        UPLOAD_LIMIT = "upload_limit"
 
     class States(models.TextChoices):
         PENDING = "pending"
@@ -327,3 +378,13 @@ class CommitNotification(models.Model):
 
     class Meta:
         db_table = "commit_notifications"
+
+
+class CommitError(BaseCodecovModel):
+    commit = models.ForeignKey(
+        "Commit",
+        related_name="errors",
+        on_delete=models.CASCADE,
+    )
+    error_code = models.CharField(max_length=100)
+    error_params = models.JSONField(default=dict)

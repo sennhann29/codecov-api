@@ -5,8 +5,10 @@ import stripe
 from django.conf import settings
 
 from billing.constants import (
+    ENTERPRISE_CLOUD_USER_PLAN_REPRESENTATIONS,
     FREE_PLAN_REPRESENTATIONS,
     PR_AUTHOR_PAID_USER_PLAN_REPRESENTATIONS,
+    REMOVED_INVOICE_STATUSES,
     USER_PLAN_REPRESENTATIONS,
 )
 from codecov_auth.models import Owner
@@ -37,7 +39,7 @@ class AbstractPaymentService(ABC):
         pass
 
     @abstractmethod
-    def list_invoices(self, owner, limit=10):
+    def list_filtered_invoices(self, owner, limit=10):
         pass
 
     @abstractmethod
@@ -58,6 +60,10 @@ class AbstractPaymentService(ABC):
 
     @abstractmethod
     def update_payment_method(self, owner, payment_method):
+        pass
+
+    @abstractmethod
+    def get_schedule(self, owner):
         pass
 
 
@@ -101,15 +107,28 @@ class StripeService(AbstractPaymentService):
             return None
         return invoice
 
+    def filter_invoices_by_status(self, invoice):
+        if invoice["status"] and invoice["status"] not in REMOVED_INVOICE_STATUSES:
+            return invoice
+
+    def filter_invoices_by_total(self, invoice):
+        if invoice["total"] and invoice["total"] != 0:
+            return invoice
+
     @_log_stripe_error
-    def list_invoices(self, owner, limit=10):
+    def list_filtered_invoices(self, owner, limit=10):
         log.info(f"Fetching invoices from Stripe for ownerid {owner.ownerid}")
         if owner.stripe_customer_id is None:
             log.info("stripe_customer_id is None, not fetching invoices")
             return []
-        return stripe.Invoice.list(customer=owner.stripe_customer_id, limit=limit)[
+        invoices = stripe.Invoice.list(customer=owner.stripe_customer_id, limit=limit)[
             "data"
         ]
+        invoices_filtered_by_status = filter(self.filter_invoices_by_status, invoices)
+        invoices_filtered_by_status_and_total = filter(
+            self.filter_invoices_by_total, invoices_filtered_by_status
+        )
+        return list(invoices_filtered_by_status_and_total)
 
     @_log_stripe_error
     def delete_subscription(self, owner):
@@ -147,7 +166,7 @@ class StripeService(AbstractPaymentService):
                 stripe.SubscriptionSchedule.release(subscription_schedule_id)
 
             stripe.Subscription.modify(
-                owner.stripe_subscription_id, cancel_at_period_end=True, prorate=False,
+                owner.stripe_subscription_id, cancel_at_period_end=True, prorate=False
             )
 
     @_log_stripe_error
@@ -237,7 +256,7 @@ class StripeService(AbstractPaymentService):
                 )
             else:
                 schedule = stripe.SubscriptionSchedule.create(
-                    from_subscription=owner.stripe_subscription_id,
+                    from_subscription=owner.stripe_subscription_id
                 )
                 subscription_schedule_id = schedule.id
 
@@ -327,12 +346,8 @@ class StripeService(AbstractPaymentService):
         return proration_behavior
 
     def _get_success_and_cancel_url(self, owner):
-        short_services = {
-            "github": "gh",
-            "bitbucket": "bb",
-            "gitlab": "gl",
-        }
-        base_path = f"/account/{short_services[owner.service]}/{owner.username}/billing"
+        short_services = {"github": "gh", "bitbucket": "bb", "gitlab": "gl"}
+        base_path = f"/plan/{short_services[owner.service]}/{owner.username}"
         success_url = f"{settings.CODECOV_DASHBOARD_URL}{base_path}?success"
         cancel_url = f"{settings.CODECOV_DASHBOARD_URL}{base_path}?cancel"
         return success_url, cancel_url
@@ -384,12 +399,43 @@ class StripeService(AbstractPaymentService):
         )
 
 
+class EnterprisePaymentService(AbstractPaymentService):
+    # enterprise has no payments setup so these are all noops
+
+    def get_invoice(self, owner, invoice_id):
+        pass
+
+    def list_filtered_invoices(self, owner, limit=10):
+        pass
+
+    def delete_subscription(self, owner):
+        pass
+
+    def modify_subscription(self, owner, plan):
+        pass
+
+    def create_checkout_session(self, owner, plan):
+        pass
+
+    def get_subscription(self, owner):
+        pass
+
+    def update_payment_method(self, owner, payment_method):
+        pass
+
+    def get_schedule(self, owner):
+        pass
+
+
 class BillingService:
     payment_service = None
 
     def __init__(self, payment_service=None, requesting_user=None):
         if payment_service is None:
-            self.payment_service = StripeService(requesting_user=requesting_user)
+            if settings.IS_ENTERPRISE:
+                self.payment_service = EnterprisePaymentService()
+            else:
+                self.payment_service = StripeService(requesting_user=requesting_user)
         else:
             self.payment_service = payment_service
 
@@ -407,8 +453,8 @@ class BillingService:
     def get_invoice(self, owner, invoice_id):
         return self.payment_service.get_invoice(owner, invoice_id)
 
-    def list_invoices(self, owner, limit=10):
-        return self.payment_service.list_invoices(owner, limit)
+    def list_filtered_invoices(self, owner, limit=10):
+        return self.payment_service.list_filtered_invoices(owner, limit)
 
     def update_plan(self, owner, desired_plan):
         """
@@ -421,7 +467,10 @@ class BillingService:
                 self.payment_service.delete_subscription(owner)
             else:
                 owner.set_basic_plan()
-        elif desired_plan["value"] in PR_AUTHOR_PAID_USER_PLAN_REPRESENTATIONS:
+        elif (
+            desired_plan["value"] in PR_AUTHOR_PAID_USER_PLAN_REPRESENTATIONS
+            or desired_plan["value"] in ENTERPRISE_CLOUD_USER_PLAN_REPRESENTATIONS
+        ):
             if owner.stripe_subscription_id is not None:
                 self.payment_service.modify_subscription(owner, desired_plan)
             else:

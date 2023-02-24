@@ -1,6 +1,7 @@
 from contextlib import nullcontext
 
 import pytest
+from django.conf import settings
 from rest_framework.exceptions import Throttled, ValidationError
 
 from billing.constants import BASIC_PLAN_NAME
@@ -9,6 +10,7 @@ from reports.tests.factories import CommitReportFactory, UploadFactory
 from upload.helpers import (
     check_commit_upload_constraints,
     try_to_get_best_possible_bot_token,
+    validate_activated_repo,
     validate_upload,
 )
 
@@ -68,7 +70,7 @@ def test_try_to_get_best_possible_nothing_and_not_private(db, mocker):
     repository = RepositoryFactory.create(author=owner, bot=None, private=False)
     repository.save()
     assert try_to_get_best_possible_bot_token(repository) is something
-    mock_get_config.assert_called_with("github", "bot")
+    mock_get_config.assert_called_with("github", "bots", "tokenless")
 
 
 def test_check_commit_contraints_settings_disabled(db, settings):
@@ -119,24 +121,39 @@ def test_check_commit_contraints_settings_enabled(db, settings):
     with pytest.raises(Throttled):
         # second commit does not have uploads made, so we block it
         check_commit_upload_constraints(second_commit)
-    with pytest.raises(Throttled):
+    with pytest.raises(Throttled) as excinfo:
         # third commit belongs to a different repo, but same user
         check_commit_upload_constraints(third_commit)
+    assert (
+        "Throttled due to limit on private repository coverage uploads"
+        in excinfo.value.detail
+    )
 
 
 @pytest.mark.parametrize(
     "totals_column_count, rows_count, should_raise",
-    [(151, 0, True), (151, 151, True), (0, 0, False), (0, 200, False)],
+    [(151, 0, False), (151, 151, True), (0, 0, False), (0, 200, True)],
 )
 def test_validate_upload_too_many_uploads_for_commit(
     db, totals_column_count, rows_count, should_raise, mocker
 ):
     redis = mocker.MagicMock(sismember=mocker.MagicMock(return_value=False))
     owner = OwnerFactory.create(plan="users-free")
-    repo = RepositoryFactory.create(author=owner,)
+    repo = RepositoryFactory.create(author=owner)
     commit = CommitFactory.create(totals={"s": totals_column_count}, repository=repo)
     report = CommitReportFactory.create(commit=commit)
     for i in range(rows_count):
         UploadFactory.create(report=report)
     with pytest.raises(ValidationError) if should_raise else nullcontext():
         validate_upload({"commit": commit.commitid}, repo, redis)
+
+
+def test_deactivated_repo(db, mocker):
+    repository = RepositoryFactory.create(active=True, activated=False)
+    settings_url = f"{settings.CODECOV_DASHBOARD_URL}/{repository.author.service}/{repository.author.username}/{repository.name}/settings"
+
+    with pytest.raises(ValidationError) as exp:
+        validate_activated_repo(repository)
+    assert exp.match(
+        f"This repository has been deactivated. To resume uploading to it, please activate the repository in the codecov UI: {settings_url}"
+    )

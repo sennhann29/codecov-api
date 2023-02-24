@@ -1,0 +1,9 @@
+input ImpactedFilesFilters {
+  ordering: ImpactedFilesOrdering
+  hasUnintendedChanges: Boolean
+}
+
+input ImpactedFilesOrdering {
+  direction: OrderingDirection
+  parameter: ImpactedFileParameter
+}

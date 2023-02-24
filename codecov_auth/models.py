@@ -3,13 +3,17 @@ import logging
 import os
 import uuid
 from datetime import datetime
-from enum import Enum
 from hashlib import md5
 
 from django.contrib.postgres.fields import ArrayField, CITextField
 from django.db import models
+from django.forms import ValidationError
 
-from billing.constants import BASIC_PLAN_NAME, USER_PLAN_REPRESENTATIONS
+from billing.constants import (
+    BASIC_PLAN_NAME,
+    ENTERPRISE_CLOUD_USER_PLAN_REPRESENTATIONS,
+    USER_PLAN_REPRESENTATIONS,
+)
 from codecov.models import BaseCodecovModel
 from codecov_auth.constants import (
     AVATAR_GITHUB_BASE_URL,
@@ -18,11 +22,11 @@ from codecov_auth.constants import (
     GRAVATAR_BASE_URL,
 )
 from codecov_auth.helpers import get_gitlab_url
-from core.managers import RepositoryQuerySet
+from core.managers import RepositoryManager
 from core.models import DateTimeWithoutTZField, Repository
 from utils.config import get_config
 
-from .managers import OwnerQuerySet
+from .managers import OwnerManager
 
 # Large number to represent Infinity as float('int') isnt JSON serializable
 INFINITY = 99999999
@@ -80,8 +84,8 @@ class Owner(models.Model):
     business_email = models.TextField(null=True)
     name = models.TextField(null=True)
     oauth_token = models.TextField(null=True)
-    stripe_customer_id = models.TextField(null=True)
-    stripe_subscription_id = models.TextField(null=True)
+    stripe_customer_id = models.TextField(null=True, blank=True)
+    stripe_subscription_id = models.TextField(null=True, blank=True)
 
     # createstamp seems to be used by legacy to track first login
     # so we shouldn't touch this outside login
@@ -94,34 +98,38 @@ class Owner(models.Model):
     staff = models.BooleanField(null=True, default=False)
     cache = models.JSONField(null=True)
     # Really an ENUM in db
-    plan = models.TextField(null=True, default=BASIC_PLAN_NAME)
+    plan = models.TextField(null=True, default=BASIC_PLAN_NAME, blank=True)
     plan_provider = models.TextField(
-        null=True, choices=PlanProviders.choices
+        null=True, choices=PlanProviders.choices, blank=True
     )  # postgres enum containing only "github"
-    plan_user_count = models.SmallIntegerField(null=True, default=5)
+    plan_user_count = models.SmallIntegerField(null=True, default=5, blank=True)
     plan_auto_activate = models.BooleanField(null=True, default=True)
-    plan_activated_users = ArrayField(models.IntegerField(null=True), null=True)
+    plan_activated_users = ArrayField(
+        models.IntegerField(null=True), null=True, blank=True
+    )
     did_trial = models.BooleanField(null=True)
     free = models.SmallIntegerField(default=0)
     invoice_details = models.TextField(null=True)
     delinquent = models.BooleanField(null=True)
     yaml = models.JSONField(null=True)
     updatestamp = DateTimeWithoutTZField(default=datetime.now)
-    organizations = ArrayField(models.IntegerField(null=True), null=True)
-    admins = ArrayField(models.IntegerField(null=True), null=True)
-    integration_id = models.IntegerField(null=True)
+    organizations = ArrayField(models.IntegerField(null=True), null=True, blank=True)
+    admins = ArrayField(models.IntegerField(null=True), null=True, blank=True)
+    integration_id = models.IntegerField(null=True, blank=True)
     permission = ArrayField(models.IntegerField(null=True), null=True)
     bot = models.ForeignKey(
-        "Owner", db_column="bot", null=True, on_delete=models.SET_NULL
+        "Owner", db_column="bot", null=True, on_delete=models.SET_NULL, blank=True
     )
     student = models.BooleanField(default=False)
     student_created_at = DateTimeWithoutTZField(null=True)
     student_updated_at = DateTimeWithoutTZField(null=True)
     onboarding_completed = models.BooleanField(default=False)
+    is_superuser = models.BooleanField(null=True, default=False)
+    max_upload_limit = models.IntegerField(null=True, default=150, blank=True)
 
-    objects = OwnerQuerySet.as_manager()
+    objects = OwnerManager()
 
-    repository_set = RepositoryQuerySet.as_manager()
+    repository_set = RepositoryManager()
 
     def __str__(self):
         return f"Owner<{self.service}/{self.username}>"
@@ -133,6 +141,14 @@ class Owner(models.Model):
     @property
     def has_yaml(self):
         return self.yaml is not None
+
+    @property
+    def default_org(self):
+        try:
+            if self.profile:
+                return self.profile.default_org
+        except OwnerProfile.DoesNotExist:
+            return None
 
     @property
     def has_legacy_plan(self):
@@ -267,6 +283,20 @@ class Owner(models.Model):
         # TODO : Implement real permissioning system
         # Required to implement django's user-model interface for Django Admin
         return self.is_staff
+
+    def clean(self):
+        if self.staff:
+            domain = self.email.split("@")[1] if self.email else ""
+            if domain != "codecov.io":
+                raise ValidationError(
+                    "User not part of Codecov cannot be a staff member"
+                )
+        if not self.plan:
+            self.plan = None
+        if not self.stripe_customer_id:
+            self.stripe_customer_id = None
+        if not self.stripe_subscription_id:
+            self.stripe_subscription_id = None
 
     @property
     def avatar_url(self, size=DEFAULT_AVATAR_SIZE):
@@ -405,6 +435,31 @@ class Owner(models.Model):
         self.save()
 
 
+class TokenTypeChoices(models.TextChoices):
+    UPLOAD = "upload"
+
+
+class OrganizationLevelToken(BaseCodecovModel):
+    owner = models.ForeignKey(
+        "Owner",
+        db_column="ownerid",
+        related_name="organization_tokens",
+        on_delete=models.CASCADE,
+    )
+    token = models.UUIDField(unique=True, default=uuid.uuid4)
+    valid_until = models.DateTimeField(blank=True, null=True)
+    token_type = models.CharField(
+        max_length=50, choices=TokenTypeChoices.choices, default=TokenTypeChoices.UPLOAD
+    )
+
+    def save(self, *args, **kwargs):
+        if not self.owner.plan in ENTERPRISE_CLOUD_USER_PLAN_REPRESENTATIONS:
+            raise ValidationError(
+                "Organization-wide upload tokens are only available in enterprise-cloud plans."
+            )
+        super().save(*args, **kwargs)
+
+
 class OwnerProfile(BaseCodecovModel):
     class ProjectType(models.TextChoices):
         PERSONAL = "PERSONAL"
@@ -427,6 +482,9 @@ class OwnerProfile(BaseCodecovModel):
     )
     goals = ArrayField(models.TextField(choices=Goal.choices), default=list)
     other_goal = models.TextField(null=True)
+    default_org = models.ForeignKey(
+        Owner, on_delete=models.CASCADE, null=True, related_name="profiles_with_default"
+    )
 
 
 class Session(models.Model):
@@ -454,18 +512,41 @@ def _generate_key():
 
 
 class RepositoryToken(BaseCodecovModel):
+    class TokenType(models.TextChoices):
+        UPLOAD = "upload"
+        PROFILING = "profiling"
+        STATIC_ANALYSIS = "static_analysis"
+
     repository = models.ForeignKey(
         "core.Repository",
         db_column="repoid",
         on_delete=models.CASCADE,
         related_name="tokens",
     )
-    token_type = models.CharField(max_length=50)
+    token_type = models.CharField(max_length=50, choices=TokenType.choices)
     valid_until = models.DateTimeField(blank=True, null=True)
     key = models.CharField(
-        max_length=40, unique=True, editable=False, default=_generate_key,
+        max_length=40, unique=True, editable=False, default=_generate_key
     )
 
     @classmethod
     def generate_key(cls):
         return _generate_key()
+
+
+class UserToken(BaseCodecovModel):
+    class TokenType(models.TextChoices):
+        API = "api"
+
+    name = models.CharField(max_length=100, null=False, blank=False)
+    owner = models.ForeignKey(
+        "Owner",
+        db_column="ownerid",
+        related_name="user_tokens",
+        on_delete=models.CASCADE,
+    )
+    token = models.UUIDField(unique=True, default=uuid.uuid4)
+    valid_until = models.DateTimeField(blank=True, null=True)
+    token_type = models.CharField(
+        max_length=50, choices=TokenType.choices, default=TokenType.API
+    )

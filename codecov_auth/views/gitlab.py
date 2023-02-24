@@ -20,15 +20,30 @@ class GitlabLoginView(LoginMixin, StateMixin, View):
     service = "gitlab"
     error_redirection_page = "/"
 
+    @property
+    def repo_service_instance(self):
+        return Gitlab(
+            oauth_consumer_token=dict(
+                key=settings.GITLAB_CLIENT_ID, secret=settings.GITLAB_CLIENT_SECRET
+            )
+        )
+
+    @property
+    def redirect_info(self):
+        return dict(
+            redirect_uri=settings.GITLAB_REDIRECT_URI,
+            repo_service=Gitlab(),
+            client_id=settings.GITLAB_CLIENT_ID,
+        )
+
     def get_url_to_redirect_to(self):
-        repo_service = Gitlab
-        base_url = urljoin(repo_service.service_url, "oauth/authorize")
+        redirect_info = self.redirect_info
+        base_url = urljoin(redirect_info["repo_service"].service_url, "oauth/authorize")
         state = self.generate_state()
-        redirect_uri = settings.GITLAB_REDIRECT_URI
         query = dict(
             response_type="code",
-            client_id=settings.GITLAB_CLIENT_ID,
-            redirect_uri=redirect_uri,
+            client_id=redirect_info["client_id"],
+            redirect_uri=redirect_info["redirect_uri"],
             state=state,
         )
         query_str = urlencode(query)
@@ -36,14 +51,11 @@ class GitlabLoginView(LoginMixin, StateMixin, View):
 
     @async_to_sync
     async def fetch_user_data(self, request, code):
-        redirect_uri = settings.GITLAB_REDIRECT_URI
-        repo_service = Gitlab(
-            oauth_consumer_token=dict(
-                key=settings.GITLAB_CLIENT_ID, secret=settings.GITLAB_CLIENT_SECRET
-            )
-        )
-        user_dict = await repo_service.get_authenticated_user(code, redirect_uri)
+        repo_service = self.repo_service_instance
+        user_dict = await repo_service.get_authenticated_user(code)
         user_dict["login"] = user_dict["username"]
+        # Comply to torngit's token encoding
+        user_dict["key"] = user_dict["access_token"]
         user_orgs = await repo_service.list_teams()
         return dict(
             user=user_dict, orgs=user_orgs, is_student=False, has_private_access=True
@@ -57,9 +69,13 @@ class GitlabLoginView(LoginMixin, StateMixin, View):
         except TorngitError:
             log.warning("Unable to log in due to problem on Gitlab", exc_info=True)
             return redirect(self.error_redirection_page)
+        user = self.get_and_modify_user(user_dict, request)
         redirection_url = self.get_redirection_url_from_state(state)
+        redirection_url = self.modify_redirection_url_based_on_default_user_org(
+            redirection_url, user
+        )
         response = redirect(redirection_url)
-        self.login_from_user_dict(user_dict, request, response)
+        self.set_cookies_and_login_user(user, request, response)
         self.remove_state(state, delay=5)
         return response
 

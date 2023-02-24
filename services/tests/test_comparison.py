@@ -1,23 +1,36 @@
 import asyncio
+import enum
 import json
+from collections import Counter
+from datetime import datetime
 from unittest.mock import PropertyMock, patch
 
 import minio
 import pytest
+import pytz
 from django.test import TestCase
 from shared.reports.resources import ReportFile
-from shared.reports.types import LineSession, ReportLine
+from shared.reports.types import ReportTotals
 from shared.utils.merge import LineType
 
 from codecov_auth.tests.factories import OwnerFactory
+from compare.models import CommitComparison
+from compare.tests.factories import CommitComparisonFactory
+from core.models import Commit
 from core.tests.factories import CommitFactory, PullFactory, RepositoryFactory
+from reports.models import CommitReport, ReportDetails
+from reports.tests.factories import CommitReportFactory
 from services.archive import SerializableReport
 from services.comparison import (
+    CommitComparisonService,
     Comparison,
+    ComparisonReport,
     CreateChangeSummaryVisitor,
     CreateLineComparisonVisitor,
     FileComparison,
     FileComparisonTraverseManager,
+    ImpactedFile,
+    ImpactedFileParameter,
     LineComparison,
     MissingComparisonReport,
     PullRequestComparison,
@@ -33,6 +46,19 @@ file_data = [
     [[0, 10, 8, 2, 0, "80.00000", 0, 0, 0, 0, 0, 0, 0]],
     [0, 2, 1, 1, 0, "50.00000", 0, 0, 0, 0, 0, 0, 0],
 ]
+
+
+class MockOrderValue(object):
+    def __init__(self, value):
+        self.value = value
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+
+class OrderingDirection(enum.Enum):
+    ASC = "ascending"
+    DESC = "descending"
 
 
 class LineNumberCollector:
@@ -357,6 +383,13 @@ class LineComparisonTests(TestCase):
         assert lc.sessions is None
 
 
+class FileComparisonConstructorTests(TestCase):
+    def test_constructor_no_keyError_if_diff_data_segements_is_missing(self):
+        file_comp = FileComparison(
+            head_file=ReportFile("file1"), base_file=ReportFile("file1"), diff_data={}
+        )
+
+
 class FileComparisonTests(TestCase):
     def setUp(self):
         self.file_comparison = FileComparison(
@@ -383,6 +416,19 @@ class FileComparisonTests(TestCase):
         assert self.file_comparison.totals == {
             "base": self.file_comparison.base_file.totals,
             "head": self.file_comparison.head_file.totals,
+            "diff": None,
+        }
+
+    def test_totals_shows_totals_for_base_head_and_diff(self):
+        diff_totals = ReportTotals.default_totals()
+        self.file_comparison.diff_data = {
+            "totals": diff_totals,
+        }
+
+        assert self.file_comparison.totals == {
+            "base": self.file_comparison.base_file.totals,
+            "head": self.file_comparison.head_file.totals,
+            "diff": diff_totals,
         }
 
     def test_totals_base_is_none_if_missing_basefile(self):
@@ -390,6 +436,7 @@ class FileComparisonTests(TestCase):
         assert self.file_comparison.totals == {
             "base": None,
             "head": self.file_comparison.head_file.totals,
+            "diff": None,
         }
 
     def test_totals_head_is_none_if_missing_headfile(self):
@@ -397,6 +444,7 @@ class FileComparisonTests(TestCase):
         assert self.file_comparison.totals == {
             "base": self.file_comparison.base_file.totals,
             "head": None,
+            "diff": None,
         }
 
     def test_totals_includes_diff_totals_if_diff(self):
@@ -475,6 +523,48 @@ class FileComparisonTests(TestCase):
             "head": LineType.hit,
         }
 
+    @patch("services.comparison.FileComparison.lines", new_callable=PropertyMock)
+    def test_segments_diff_only(self, lines):
+        lines.return_value = [
+            LineComparison([1], [1], 1, 1, "first line", False),
+            LineComparison(None, [1], None, 2, "+this is an added line", True),
+            LineComparison([1], None, 2, None, "-this is a removed line", True),
+            LineComparison([1], [1], 3, 3, "last line", False),
+        ]
+
+        segments = self.file_comparison.segments
+
+        assert len(segments) == 1
+        assert segments[0].lines == self.file_comparison.lines
+        assert segments[0].header == (1, 3, 1, 3)
+        assert segments[0].has_unintended_changes == False
+
+    @patch("services.comparison.FileComparison.lines", new_callable=PropertyMock)
+    def test_segments_changes_only(self, lines):
+        lines.return_value = [
+            LineComparison([1], [1], 1, 1, "first line", False),
+            LineComparison([0], [1], 2, 2, "middle line", False),  # coverage added
+            LineComparison([1], [1], 3, 3, "last line", False),
+        ]
+
+        segments = self.file_comparison.segments
+
+        assert len(segments) == 1
+        assert segments[0].lines == self.file_comparison.lines
+        assert segments[0].header == (1, 3, 1, 3)
+        assert segments[0].has_unintended_changes
+
+    @patch("services.comparison.FileComparison.lines", new_callable=PropertyMock)
+    def test_segments_no_changes_no_diff(self, lines):
+        lines.return_value = [
+            LineComparison([1], [1], 1, 1, "first line", False),
+            LineComparison([1], [1], 2, 2, "middle line", False),
+            LineComparison([1], [1], 3, 3, "last line", False),
+        ]
+
+        segments = self.file_comparison.segments
+        assert len(segments) == 0
+
     def test_change_summary(self):
         head_lines = [
             [1, "", [], 0, None],
@@ -500,6 +590,19 @@ class FileComparisonTests(TestCase):
         self.file_comparison.src = src
 
         assert self.file_comparison.change_summary == {"hits": 2, "misses": -2}
+
+    @patch(
+        "services.comparison.FileComparison.change_summary", new_callable=PropertyMock
+    )
+    def test_has_changes(self, change_summary_mock):
+        change_summary_mock.return_value = Counter()
+        assert self.file_comparison.has_changes == False
+
+        change_summary_mock.return_value = Counter({"hits": 0, "misses": 0})
+        assert self.file_comparison.has_changes == False
+
+        change_summary_mock.return_value = Counter({"hits": 1, "misses": -1})
+        assert self.file_comparison.has_changes == True
 
     @patch("services.comparison.FileComparisonTraverseManager.apply")
     def test_does_not_calculate_changes_if_no_diff_and_should_search_for_changes_is_False(
@@ -617,7 +720,7 @@ class ComparisonTests(TestCase):
         head_report_mock,
         git_comparison_mock,
     ):
-        from internal_api.tests.views.test_compare_viewset import (
+        from api.internal.tests.views.test_compare_viewset import (
             MockedComparisonAdapter,
         )
 
@@ -644,7 +747,7 @@ class ComparisonTests(TestCase):
         head_report_mock,
         git_comparison_mock,
     ):
-        from internal_api.tests.views.test_compare_viewset import (
+        from api.internal.tests.views.test_compare_viewset import (
             MockedComparisonAdapter,
         )
 
@@ -704,7 +807,7 @@ class ComparisonTests(TestCase):
         assert self.comparison.totals["head"] == head_report_mock.return_value.totals
         assert self.comparison.totals["base"] is None
 
-    def test_totals_returns_head_totals_if_exists(
+    def test_totals_returns_base_totals_if_exists(
         self, base_report_mock, head_report_mock, git_comparison_mock
     ):
         head_report_mock.return_value = None
@@ -712,6 +815,62 @@ class ComparisonTests(TestCase):
 
         assert self.comparison.totals["base"] == base_report_mock.return_value.totals
         assert self.comparison.totals["head"] is None
+
+    def test_totals_returns_diff_totals_if_exists(
+        self, base_report_mock, head_report_mock, git_comparison_mock
+    ):
+        head_report = SerializableReport()
+        head_report_mock.return_value = head_report
+        base_report_mock.return_value = None
+
+        diff_totals = ReportTotals.default_totals()
+        git_comparison_mock.return_value = {"diff": {"totals": diff_totals}}
+
+        assert self.comparison.totals["base"] is None
+        assert self.comparison.totals["head"] == head_report.totals
+        assert self.comparison.totals["diff"] is diff_totals
+
+    def test_head_and_base_reports_have_cff_sessions(
+        self, base_report_mock, head_report_mock, _
+    ):
+        # Only relevant files keys to the session object
+        head_report_sessions = {"0": {"st": "carriedforward"}}
+        head_report = SerializableReport(sessions=head_report_sessions)
+        head_report_mock.return_value = head_report
+        base_report_sessions = {"0": {"st": "carriedforward"}}
+        base_report = SerializableReport(sessions=base_report_sessions)
+        base_report_mock.return_value = base_report
+
+        fc = self.comparison.has_different_number_of_head_and_base_sessions
+        assert fc == False
+
+    def test_head_and_base_reports_have_different_number_of_reports(
+        self, base_report_mock, head_report_mock, _
+    ):
+        # Only relevant files keys to the session object
+        head_report_sessions = {"0": {"st": "uploaded"}, "1": {"st": "uploaded"}}
+        head_report = SerializableReport(sessions=head_report_sessions)
+        head_report_mock.return_value = head_report
+        base_report_sessions = {"0": {"st": "uploaded"}}
+        base_report = SerializableReport(sessions=base_report_sessions)
+        base_report_mock.return_value = base_report
+
+        fc = self.comparison.has_different_number_of_head_and_base_sessions
+        assert fc == True
+
+    def test_head_and_base_reports_have_same_number_of_reports(
+        self, base_report_mock, head_report_mock, _
+    ):
+        # Only relevant files keys to the session object
+        head_report_sessions = {"0": {"st": "uploaded"}}
+        head_report = SerializableReport(sessions=head_report_sessions)
+        head_report_mock.return_value = head_report
+        base_report_sessions = {"0": {"st": "uploaded"}}
+        base_report = SerializableReport(sessions=base_report_sessions)
+        base_report_mock.return_value = base_report
+
+        fc = self.comparison.has_different_number_of_head_and_base_sessions
+        assert fc == False
 
 
 class PullRequestComparisonTests(TestCase):
@@ -1077,8 +1236,8 @@ class ComparisonHasUnmergedBaseCommitsTests(TestCase):
 
     def test_returns_true_if_reverse_comparison_has_commits(self, get_adapter_mock):
         commits = ["a", "b"]
-        get_adapter_mock.return_value = ComparisonHasUnmergedBaseCommitsTests.MockFetchDiffCoro(
-            commits
+        get_adapter_mock.return_value = (
+            ComparisonHasUnmergedBaseCommitsTests.MockFetchDiffCoro(commits)
         )
         assert self.comparison.has_unmerged_base_commits is True
 
@@ -1086,7 +1245,826 @@ class ComparisonHasUnmergedBaseCommitsTests(TestCase):
         self, get_adapter_mock
     ):
         commits = ["a"]
-        get_adapter_mock.return_value = ComparisonHasUnmergedBaseCommitsTests.MockFetchDiffCoro(
-            commits
+        get_adapter_mock.return_value = (
+            ComparisonHasUnmergedBaseCommitsTests.MockFetchDiffCoro(commits)
         )
         assert self.comparison.has_unmerged_base_commits is False
+
+
+class SegmentTests(TestCase):
+    def _report_lines(self, hits):
+        return [
+            # from shared.reports.types.ReportLine
+            # values are [coverage, type, sessions, messages, complexity]
+            [hit, "", [], 0, None]
+            for hit in hits
+        ]
+
+    def _src(self, n):
+        return [f"line{i+1}" for i in range(n)]
+
+    def setUp(self):
+        self.file_comparison = FileComparison(
+            base_file=ReportFile("file1"), head_file=ReportFile("file1")
+        )
+
+    def test_single_segment(self):
+        self.file_comparison.src = self._src(12)
+        self.file_comparison.head_file._lines = self._report_lines(
+            [1 for _ in range(12)]
+        )
+        self.file_comparison.base_file._lines = self._report_lines(
+            [
+                1,
+                1,  # first line of segment
+                1,
+                1,
+                0,  # coverage changed
+                0,  # coverage changed
+                1,
+                0,  # coverage changed
+                1,
+                1,
+                1,  # last line of segment
+                1,
+            ]
+        )
+
+        segments = self.file_comparison.segments
+        assert len(segments) == 1
+
+        segment_lines = segments[0].lines
+        assert segment_lines[0].value == "line2"
+        assert segment_lines[-1].value == "line11"
+        assert len(segment_lines) == 10
+
+    def test_multiple_segments(self):
+        self.file_comparison.src = self._src(25)
+        self.file_comparison.head_file._lines = self._report_lines(
+            [1 for _ in range(25)]
+        )
+        self.file_comparison.base_file._lines = self._report_lines(
+            [
+                1,
+                1,  # first line of segment 1
+                1,
+                1,
+                0,  # coverage changed
+                0,  # coverage changed
+                1,
+                0,  # coverage changed
+                1,
+                1,
+                1,  # last line of segment 1
+                1,
+                1,
+                1,
+                1,
+                1,  # first line of segment 2
+                1,
+                1,
+                0,  # coverage changed
+                1,
+                1,
+                1,  # last line of segment 2
+                1,
+                1,
+                1,
+            ]
+        )
+
+        segments = self.file_comparison.segments
+        assert len(segments) == 2
+
+        assert segments[0].lines[0].value == "line2"
+        assert segments[0].lines[-1].value == "line11"
+        assert len(segments[0].lines) == 10
+        assert segments[0].header == (2, 10, 2, 10)
+        assert segments[0].has_unintended_changes
+
+        assert segments[1].lines[0].value == "line16"
+        assert segments[1].lines[-1].value == "line22"
+        assert len(segments[1].lines) == 7
+        assert segments[1].header == (16, 7, 16, 7)
+        assert segments[1].has_unintended_changes
+
+    @patch("services.comparison.FileComparison.lines", new_callable=PropertyMock)
+    def test_header_new_file(self, lines):
+        lines.return_value = [
+            LineComparison(None, [1], None, 1, "+line1", True),
+            LineComparison(None, [1], None, 2, "+line2", True),
+            LineComparison(None, [1], None, 3, "+line3", True),
+        ]
+
+        file_comparison = FileComparison(base_file=None, head_file=ReportFile("file1"))
+
+        segments = file_comparison.segments
+        assert len(segments) == 1
+        assert segments[0].header == (0, 0, 1, 3)
+
+    @patch("services.comparison.FileComparison.lines", new_callable=PropertyMock)
+    def test_header_deleted_file(self, lines):
+        lines.return_value = [
+            LineComparison([1], None, 1, None, "-line1", True),
+            LineComparison([1], None, 2, None, "-line2", True),
+            LineComparison([1], None, 3, None, "-line3", True),
+        ]
+
+        file_comparison = FileComparison(base_file=ReportFile("file1"), head_file=None)
+
+        segments = file_comparison.segments
+        assert len(segments) == 1
+        assert segments[0].header == (1, 3, 0, 0)
+
+
+mock_data_from_archive = """
+{
+    "files": [{
+        "head_name": "fileA",
+        "base_name": "fileA",
+        "head_coverage": {
+            "hits": 10,
+            "misses": 1,
+            "partials": 1,
+            "branches": 3,
+            "sessions": 0,
+            "complexity": 0,
+            "complexity_total": 0,
+            "methods": 5
+        },
+        "base_coverage": {
+            "hits": 5,
+            "misses": 6,
+            "partials": 1,
+            "branches": 2,
+            "sessions": 0,
+            "complexity": 0,
+            "complexity_total": 0,
+            "methods": 4
+        },
+        "added_diff_coverage": [
+            [9,"h"],
+            [2,"m"],
+            [3,"m"],
+            [13,"p"],
+            [14,"h"],
+            [15,"h"],
+            [16,"h"],
+            [17,"h"]
+        ],
+        "unexpected_line_changes": [[[1, "h"], [1, "h"]]]
+    },
+    {
+        "head_name": "fileB",
+        "base_name": "fileB",
+        "head_coverage": {
+            "hits": 12,
+            "misses": 1,
+            "partials": 1,
+            "branches": 3,
+            "sessions": 0,
+            "complexity": 0,
+            "complexity_total": 0,
+            "methods": 5
+        },
+        "base_coverage": {
+            "hits": 5,
+            "misses": 6,
+            "partials": 1,
+            "branches": 2,
+            "sessions": 0,
+            "complexity": 0,
+            "complexity_total": 0,
+            "methods": 4
+        },
+        "added_diff_coverage": [
+            [9,"h"],
+            [10,"m"],
+            [13,"p"],
+            [14,"h"],
+            [15,"h"],
+            [16,"h"],
+            [17,"h"]
+        ],
+        "unexpected_line_changes": []
+    }]
+}
+"""
+
+mocked_files_with_direct_and_indirect_changes = """
+{
+    "files": [{
+        "head_name": "fileA",
+        "base_name": "fileA",
+        "head_coverage": {
+            "hits": 10,
+            "misses": 1,
+            "partials": 1,
+            "branches": 3,
+            "sessions": 0,
+            "complexity": 0,
+            "complexity_total": 0,
+            "methods": 5
+        },
+        "base_coverage": {
+            "hits": 5,
+            "misses": 6,
+            "partials": 1,
+            "branches": 2,
+            "sessions": 0,
+            "complexity": 0,
+            "complexity_total": 0,
+            "methods": 4
+        },
+        "added_diff_coverage": [
+            [9,"h"],
+            [2,"m"],
+            [3,"m"],
+            [13,"p"],
+            [14,"h"],
+            [15,"h"],
+            [16,"h"],
+            [17,"h"]
+        ],
+        "unexpected_line_changes": [[[1, "h"], [1, "h"]]]
+    },
+    {
+        "head_name": "fileB",
+        "base_name": "fileB",
+        "head_coverage": {
+            "hits": 12,
+            "misses": 1,
+            "partials": 1,
+            "branches": 3,
+            "sessions": 0,
+            "complexity": 0,
+            "complexity_total": 0,
+            "methods": 5
+        },
+        "base_coverage": {
+            "hits": 5,
+            "misses": 6,
+            "partials": 1,
+            "branches": 2,
+            "sessions": 0,
+            "complexity": 0,
+            "complexity_total": 0,
+            "methods": 4
+        },
+        "added_diff_coverage": [
+            [9,"h"],
+            [10,"m"],
+            [13,"p"],
+            [14,"h"],
+            [15,"h"],
+            [16,"h"],
+            [17,"h"]
+        ],
+        "unexpected_line_changes": []
+    },
+    {
+        "head_name": "fileC",
+        "base_name": "fileC",
+        "head_coverage": {
+            "hits": 12,
+            "misses": 1,
+            "partials": 1,
+            "branches": 3,
+            "sessions": 0,
+            "complexity": 0,
+            "complexity_total": 0,
+            "methods": 5
+        },
+        "base_coverage": {
+            "hits": 5,
+            "misses": 6,
+            "partials": 1,
+            "branches": 2,
+            "sessions": 0,
+            "complexity": 0,
+            "complexity_total": 0,
+            "methods": 4
+        },
+        "added_diff_coverage": [],
+        "unexpected_line_changes": [[[1, "h"], [1, "h"]]]
+    }]
+}
+"""
+
+
+class ComparisonReportTest(TestCase):
+    def setUp(self):
+        self.user = OwnerFactory(username="codecov-user")
+        self.parent_commit = CommitFactory()
+        self.commit = CommitFactory(
+            parent_commit_id=self.parent_commit.commitid,
+            repository=self.parent_commit.repository,
+        )
+        self.comparison = CommitComparisonFactory(
+            base_commit=self.parent_commit,
+            compare_commit=self.commit,
+            report_storage_path="v4/test.json",
+        )
+        self.comparison_without_storage = CommitComparisonFactory()
+        self.comparison_report = ComparisonReport(self.comparison)
+        self.comparison_report_without_storage = ComparisonReport(
+            self.comparison_without_storage
+        )
+
+    def test_empty_impacted_files(self):
+        impacted_files = self.comparison_report_without_storage.impacted_files
+        assert impacted_files == []
+
+    @patch("services.archive.ArchiveService.read_file")
+    def test_impacted_files_error_when_failing_to_get_file_from_storage(
+        self, mock_read_file
+    ):
+        mock_read_file.side_effect = Exception()
+        impacted_files = self.comparison_report.impacted_files
+        assert impacted_files == []
+
+    @patch("services.archive.ArchiveService.read_file")
+    def test_impacted_file(self, read_file):
+        read_file.return_value = mock_data_from_archive
+        impacted_file = self.comparison_report.impacted_file("fileB")
+        assert impacted_file == ImpactedFile(
+            file_name="fileB",
+            base_name="fileB",
+            head_name="fileB",
+            base_coverage=ReportTotals(
+                files=0,
+                lines=0,
+                hits=5,
+                misses=6,
+                partials=1,
+                coverage=41.666666666666664,
+                branches=2,
+                methods=4,
+                messages=0,
+                sessions=0,
+                complexity=0,
+                complexity_total=0,
+                diff=0,
+            ),
+            head_coverage=ReportTotals(
+                files=0,
+                lines=0,
+                hits=12,
+                misses=1,
+                partials=1,
+                coverage=85.71428571428571,
+                branches=3,
+                methods=5,
+                messages=0,
+                sessions=0,
+                complexity=0,
+                complexity_total=0,
+                diff=0,
+            ),
+            patch_coverage=ReportTotals(
+                files=0,
+                lines=0,
+                hits=5,
+                misses=1,
+                partials=1,
+                coverage=71.42857142857143,
+                branches=0,
+                methods=0,
+                messages=0,
+                sessions=0,
+                complexity=0,
+                complexity_total=0,
+                diff=0,
+            ),
+            change_coverage=44.047619047619044,
+            misses_in_comparison=1,
+        )
+
+    def test_impacted_file_deserialize_file(self):
+        file = {
+            "base_name": "flag2/words.js",
+            "head_name": "flag2/words.js",
+            "file_was_added_by_diff": False,
+            "file_was_removed_by_diff": False,
+            "base_coverage": None,
+            "head_coverage": {
+                "hits": 12,
+                "misses": 1,
+                "partials": 1,
+                "branches": 3,
+                "sessions": 0,
+                "complexity": 0,
+                "complexity_total": 0,
+                "methods": 5,
+            },
+            "removed_diff_coverage": None,
+            "added_diff_coverage": [],
+            "unexpected_line_changes": [
+                [[1, None], [1, "h"]],
+                [[2, None], [2, "h"]],
+                [[5, None], [5, "h"]],
+                [[6, None], [6, "h"]],
+                [[9, None], [9, "m"]],
+                [[10, None], [10, "p"]],
+                [[14, None], [13, "h"]],
+                [[15, None], [14, "h"]],
+                [[18, None], [17, "h"]],
+                [[19, None], [18, "h"]],
+                [[20, None], [19, "h"]],
+                [[22, None], [21, "h"]],
+                [[23, None], [22, "h"]],
+                [[27, None], [26, "h"]],
+            ],
+            "lines_only_on_base": [13],
+            "lines_only_on_head": [],
+        }
+        deserialized_file = self.comparison_report.deserialize_file(file)
+        assert deserialized_file == ImpactedFile(
+            file_name="words.js",
+            base_name="flag2/words.js",
+            head_name="flag2/words.js",
+            base_coverage=None,
+            head_coverage=ReportTotals(
+                files=0,
+                lines=0,
+                hits=12,
+                misses=1,
+                partials=1,
+                coverage=85.71428571428571,
+                branches=3,
+                methods=5,
+                messages=0,
+                sessions=0,
+                complexity=0,
+                complexity_total=0,
+                diff=0,
+            ),
+            patch_coverage=None,
+            change_coverage=None,
+            misses_in_comparison=1,
+        )
+
+    @patch("services.archive.ArchiveService.read_file")
+    def test_impacted_files_filtered_by_indirect_changes(self, read_file):
+        read_file.return_value = mock_data_from_archive
+        impacted_files = self.comparison_report.impacted_files_with_unintended_changes
+        assert impacted_files == [
+            ImpactedFile(
+                file_name="fileA",
+                base_name="fileA",
+                head_name="fileA",
+                base_coverage=ReportTotals(
+                    files=0,
+                    lines=0,
+                    hits=5,
+                    misses=6,
+                    partials=1,
+                    coverage=41.666666666666664,
+                    branches=2,
+                    methods=4,
+                    messages=0,
+                    sessions=0,
+                    complexity=0,
+                    complexity_total=0,
+                    diff=0,
+                ),
+                head_coverage=ReportTotals(
+                    files=0,
+                    lines=0,
+                    hits=10,
+                    misses=1,
+                    partials=1,
+                    coverage=83.33333333333333,
+                    branches=3,
+                    methods=5,
+                    messages=0,
+                    sessions=0,
+                    complexity=0,
+                    complexity_total=0,
+                    diff=0,
+                ),
+                patch_coverage=ReportTotals(
+                    files=0,
+                    lines=0,
+                    hits=5,
+                    misses=2,
+                    partials=1,
+                    coverage=62.5,
+                    branches=0,
+                    methods=0,
+                    messages=0,
+                    sessions=0,
+                    complexity=0,
+                    complexity_total=0,
+                    diff=0,
+                ),
+                change_coverage=41.666666666666664,
+                misses_in_comparison=2,
+            ),
+        ]
+
+    @patch("services.archive.ArchiveService.read_file")
+    def test_impacted_files_filtered_by_direct_changes(self, read_file):
+        read_file.return_value = mocked_files_with_direct_and_indirect_changes
+        impacted_files = self.comparison_report.impacted_files_with_direct_changes
+        assert impacted_files == [
+            ImpactedFile(
+                file_name="fileA",
+                base_name="fileA",
+                head_name="fileA",
+                base_coverage=ReportTotals(
+                    files=0,
+                    lines=0,
+                    hits=5,
+                    misses=6,
+                    partials=1,
+                    coverage=41.666666666666664,
+                    branches=2,
+                    methods=4,
+                    messages=0,
+                    sessions=0,
+                    complexity=0,
+                    complexity_total=0,
+                    diff=0,
+                ),
+                head_coverage=ReportTotals(
+                    files=0,
+                    lines=0,
+                    hits=10,
+                    misses=1,
+                    partials=1,
+                    coverage=83.33333333333333,
+                    branches=3,
+                    methods=5,
+                    messages=0,
+                    sessions=0,
+                    complexity=0,
+                    complexity_total=0,
+                    diff=0,
+                ),
+                patch_coverage=ReportTotals(
+                    files=0,
+                    lines=0,
+                    hits=5,
+                    misses=2,
+                    partials=1,
+                    coverage=62.5,
+                    branches=0,
+                    methods=0,
+                    messages=0,
+                    sessions=0,
+                    complexity=0,
+                    complexity_total=0,
+                    diff=0,
+                ),
+                change_coverage=41.666666666666664,
+                misses_in_comparison=2,
+            ),
+            ImpactedFile(
+                file_name="fileB",
+                base_name="fileB",
+                head_name="fileB",
+                base_coverage=ReportTotals(
+                    files=0,
+                    lines=0,
+                    hits=5,
+                    misses=6,
+                    partials=1,
+                    coverage=41.666666666666664,
+                    branches=2,
+                    methods=4,
+                    messages=0,
+                    sessions=0,
+                    complexity=0,
+                    complexity_total=0,
+                    diff=0,
+                ),
+                head_coverage=ReportTotals(
+                    files=0,
+                    lines=0,
+                    hits=12,
+                    misses=1,
+                    partials=1,
+                    coverage=85.71428571428571,
+                    branches=3,
+                    methods=5,
+                    messages=0,
+                    sessions=0,
+                    complexity=0,
+                    complexity_total=0,
+                    diff=0,
+                ),
+                patch_coverage=ReportTotals(
+                    files=0,
+                    lines=0,
+                    hits=5,
+                    misses=1,
+                    partials=1,
+                    coverage=71.42857142857143,
+                    branches=0,
+                    methods=0,
+                    messages=0,
+                    sessions=0,
+                    complexity=0,
+                    complexity_total=0,
+                    diff=0,
+                ),
+                change_coverage=44.047619047619044,
+                misses_in_comparison=1,
+            ),
+        ]
+
+    def test_file_has_diff(self):
+        file = {
+            "head_name": "fileB",
+            "base_name": "fileB",
+            "head_coverage": {
+                "hits": 12,
+                "misses": 1,
+                "partials": 1,
+                "branches": 3,
+                "sessions": 0,
+                "complexity": 0,
+                "complexity_total": 0,
+                "methods": 5,
+            },
+            "base_coverage": {
+                "hits": 5,
+                "misses": 6,
+                "partials": 1,
+                "branches": 2,
+                "sessions": 0,
+                "complexity": 0,
+                "complexity_total": 0,
+                "methods": 4,
+            },
+            "added_diff_coverage": [
+                [9, "h"],
+                [10, "m"],
+                [13, "p"],
+                [14, "h"],
+                [15, "h"],
+                [16, "h"],
+                [17, "h"],
+            ],
+            "unexpected_line_changes": [],
+        }
+        has_diff = self.comparison_report.has_diff(file)
+        assert has_diff is True
+
+    def test_file_has_diff_with_indirect_changes(self):
+        file = {
+            "head_name": "fileB",
+            "base_name": "fileB",
+            "head_coverage": {
+                "hits": 12,
+                "misses": 1,
+                "partials": 1,
+                "branches": 3,
+                "sessions": 0,
+                "complexity": 0,
+                "complexity_total": 0,
+                "methods": 5,
+            },
+            "base_coverage": {
+                "hits": 5,
+                "misses": 6,
+                "partials": 1,
+                "branches": 2,
+                "sessions": 0,
+                "complexity": 0,
+                "complexity_total": 0,
+                "methods": 4,
+            },
+            "added_diff_coverage": [
+                [9, "h"],
+                [10, "m"],
+                [13, "p"],
+                [14, "h"],
+                [15, "h"],
+                [16, "h"],
+                [17, "h"],
+            ],
+            "unexpected_line_changes": [[[1, "h"], [1, "h"]]],
+        }
+        has_diff = self.comparison_report.has_diff(file)
+        assert has_diff is True
+
+    def test_file_has_changes(self):
+        file = {
+            "head_name": "fileB",
+            "base_name": "fileB",
+            "head_coverage": {
+                "hits": 12,
+                "misses": 1,
+                "partials": 1,
+                "branches": 3,
+                "sessions": 0,
+                "complexity": 0,
+                "complexity_total": 0,
+                "methods": 5,
+            },
+            "base_coverage": {
+                "hits": 5,
+                "misses": 6,
+                "partials": 1,
+                "branches": 2,
+                "sessions": 0,
+                "complexity": 0,
+                "complexity_total": 0,
+                "methods": 4,
+            },
+            "added_diff_coverage": [
+                [9, "h"],
+                [10, "m"],
+                [13, "p"],
+                [14, "h"],
+                [15, "h"],
+                [16, "h"],
+                [17, "h"],
+            ],
+            "unexpected_line_changes": [[[1, "h"], [1, "h"]]],
+        }
+        has_diff = self.comparison_report.has_changes(file)
+        assert has_diff is True
+
+
+class CommitComparisonTests(TestCase):
+    def setUp(self):
+        self.base_commit = CommitFactory(updatestamp=datetime(2023, 1, 1))
+        self.compare_commit = CommitFactory(updatestamp=datetime(2023, 1, 1))
+        self.base_commit_report = CommitReportFactory(commit=self.base_commit)
+        self.compare_commit_report = CommitReportFactory(commit=self.compare_commit)
+        self.base_report_details = ReportDetails.objects.create(
+            report_id=self.base_commit_report.id,
+            files_array=[],
+        )
+        self.compare_report_details = ReportDetails.objects.create(
+            report_id=self.compare_commit_report.id,
+            files_array=[],
+        )
+        self.commit_comparison = CommitComparisonFactory(
+            base_commit=self.base_commit,
+            compare_commit=self.compare_commit,
+        )
+
+    def test_needs_recompute(self):
+        commit_comparison = CommitComparison.objects.get(pk=self.commit_comparison.pk)
+        service = CommitComparisonService(commit_comparison)
+
+        assert service.needs_recompute() == False
+
+    def test_needs_recompute_missing_timestamp(self):
+        Commit.objects.filter(pk=self.base_commit.id).update(updatestamp=None)
+        commit_comparison = CommitComparison.objects.get(pk=self.commit_comparison.pk)
+        service = CommitComparisonService(commit_comparison)
+
+        assert service.needs_recompute() == False
+
+    def test_stale_base_commit(self):
+        # base_commit was updated after this comparison was made
+        self.commit_comparison.updated_at = datetime(2021, 1, 1, tzinfo=pytz.utc)
+        self.commit_comparison.save()
+        self.base_commit.updatestamp = datetime(2023, 1, 2)
+        self.base_commit.save()
+
+        commit_comparison = CommitComparison.objects.get(pk=self.commit_comparison.pk)
+        service = CommitComparisonService(commit_comparison)
+        assert service.needs_recompute() == True
+
+    def test_stale_compare_commit(self):
+        # compare_commit was updated after this comparison was made
+        self.commit_comparison.updated_at = datetime(2021, 1, 1, tzinfo=pytz.utc)
+        self.commit_comparison.save()
+
+        self.compare_commit.updatestamp = datetime(2023, 1, 2)
+        self.compare_commit.save()
+
+        commit_comparison = CommitComparison.objects.get(pk=self.commit_comparison.pk)
+        service = CommitComparisonService(commit_comparison)
+
+        assert service.needs_recompute() == True
+
+    def test_stale_base_report_details(self):
+        # base report details were updated after comparison was made
+        self.commit_comparison.updated_at = datetime(2021, 1, 1, tzinfo=pytz.utc)
+        self.commit_comparison.save()
+        self.base_report_details.updated_at = datetime(2023, 1, 2, tzinfo=pytz.utc)
+        self.base_report_details.save()
+
+        commit_comparison = CommitComparison.objects.get(pk=self.commit_comparison.pk)
+        service = CommitComparisonService(commit_comparison)
+
+        assert service.needs_recompute() == True
+
+    def test_stale_compare_report_details(self):
+        # compare report details were updated after comparison was made
+        self.commit_comparison.updated_at = datetime(2021, 1, 1, tzinfo=pytz.utc)
+        self.commit_comparison.save()
+        self.compare_report_details.updated_at = datetime(2023, 1, 2, tzinfo=pytz.utc)
+        self.compare_report_details.save()
+
+        commit_comparison = CommitComparison.objects.get(pk=self.commit_comparison.pk)
+        service = CommitComparisonService(commit_comparison)
+
+        assert service.needs_recompute() == True

@@ -267,8 +267,8 @@ def determine_upload_pr_to_use(upload_params):
     pullid = is_pull_noted_in_branch.match(upload_params.get("branch") or "")
     if pullid:
         return pullid.groups()[1]
-    # The value of pr can be "True" and we use that info when determining upload branch, however we don't want to save that value to the db
-    elif upload_params.get("pr") is True:
+    # The value of pr can be "true" and we use that info when determining upload branch, however we don't want to save that value to the db
+    elif upload_params.get("pr") == "true":
         return None
     else:
         return upload_params.get("pr")
@@ -302,7 +302,11 @@ def try_to_get_best_possible_bot_token(repository):
         )
         return encryptor.decrypt_token(repository.author.oauth_token)
     if not repository.private:
-        return get_config(service, "bot")
+        log.info(
+            "Using tokenless bot as bot fallback",
+            extra=dict(repoid=repository.repoid, ownerid=repository.author.ownerid),
+        )
+        return get_config(service, "bots", "tokenless")
     return None
 
 
@@ -337,13 +341,12 @@ def determine_upload_commit_to_use(upload_params, repository):
         except TorngitObjectNotFoundError as e:
             log.warning(
                 "Unable to fetch commit. Not found",
-                extra=dict(commit=upload_params.get("commit"),),
+                extra=dict(commit=upload_params.get("commit")),
             )
             return upload_params.get("commit")
         except TorngitClientError as e:
             log.warning(
-                "Unable to fetch commit",
-                extra=dict(commit=upload_params.get("commit"),),
+                "Unable to fetch commit", extra=dict(commit=upload_params.get("commit"))
             )
             return upload_params.get("commit")
 
@@ -414,7 +417,7 @@ def check_commit_upload_constraints(commit: Commit):
         )
         if limit is not None:
             did_commit_uploads_start_already = ReportSession.objects.filter(
-                report__commit=commit,
+                report__commit=commit
             ).exists()
             if not did_commit_uploads_start_already:
                 limit = USER_PLAN_REPRESENTATIONS[owner.plan].get(
@@ -434,7 +437,8 @@ def check_commit_upload_constraints(commit: Commit):
                         "User exceeded its limits for usage",
                         extra=dict(ownerid=owner.ownerid, repoid=commit.repository_id),
                     )
-                    raise Throttled()
+                    message = "Request was throttled. Throttled due to limit on private repository coverage uploads to Codecov on a free plan. Please upgrade your plan if you require additional uploads this month."
+                    raise Throttled(detail=message)
 
 
 def validate_upload(upload_params, repository, redis):
@@ -442,6 +446,7 @@ def validate_upload(upload_params, repository, redis):
     Make sure the upload can proceed and, if so, activate the repository if needed.
     """
 
+    validate_activated_repo(repository)
     # Make sure repo hasn't moved
     if not repository.name:
         raise ValidationError(
@@ -455,15 +460,15 @@ def validate_upload(upload_params, repository, redis):
         )
         new_session_count = ReportSession.objects.filter(
             ~Q(state="error"),
-            ~Q(upload_type=UploadType.carryforwarded.name),
+            ~Q(upload_type=UploadType.CARRIEDFORWARD.db_name),
             report__commit=commit,
         ).count()
         session_count = (commit.totals.get("s") if commit.totals else 0) or 0
         current_upload_limit = get_config("setup", "max_sessions") or 150
-        if session_count > current_upload_limit:
-            if new_session_count <= current_upload_limit:
+        if new_session_count > current_upload_limit:
+            if session_count <= current_upload_limit:
                 log.info(
-                    "New session count would not have blocked this upload",
+                    "Old session count would not have blocked this upload",
                     extra=dict(
                         commit=upload_params.get("commit"),
                         session_count=session_count,
@@ -481,9 +486,9 @@ def validate_upload(upload_params, repository, redis):
                 ),
             )
             raise ValidationError("Too many uploads to this commit.")
-        elif new_session_count > current_upload_limit:
+        elif session_count > current_upload_limit:
             log.info(
-                "New session count would block this upload",
+                "Old session count would block this upload",
                 extra=dict(
                     commit=upload_params.get("commit"),
                     session_count=session_count,
@@ -591,7 +596,7 @@ def dispatch_upload_task(task_arguments, repository, redis):
 
     redis.rpush(repo_queue_key, dumps(task_arguments))
     redis.expire(
-        repo_queue_key, cache_uploads_eta if cache_uploads_eta is not True else 86400,
+        repo_queue_key, cache_uploads_eta if cache_uploads_eta is not True else 86400
     )
     redis.setex(
         f"latest_upload/{repository.repoid}/{task_arguments.get('commit')}",
@@ -603,7 +608,16 @@ def dispatch_upload_task(task_arguments, repository, redis):
     TaskService().upload(
         repoid=repository.repoid,
         commitid=task_arguments.get("commit"),
+        report_code=task_arguments.get("report_code"),
         countdown=max(
             countdown, int(get_config("setup", "upload_processing_delay") or 0)
         ),
     )
+
+
+def validate_activated_repo(repository):
+    if repository.active and not repository.activated:
+        settings_url = f"{settings.CODECOV_DASHBOARD_URL}/{repository.author.service}/{repository.author.username}/{repository.name}/settings"
+        raise ValidationError(
+            f"This repository has been deactivated. To resume uploading to it, please activate the repository in the codecov UI: {settings_url}"
+        )

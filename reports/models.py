@@ -26,8 +26,20 @@ class AbstractTotals(BaseCodecovModel):
 
 class CommitReport(BaseCodecovModel):
     commit = models.ForeignKey(
-        "core.Commit", related_name="reports", on_delete=models.CASCADE,
+        "core.Commit", related_name="reports", on_delete=models.CASCADE
     )
+    code = models.CharField(null=True, max_length=100)
+
+
+class ReportResults(BaseCodecovModel):
+    class ReportResultsStates(models.TextChoices):
+        CREATED = "created"
+        READY = "ready"
+
+    report = models.OneToOneField(CommitReport, on_delete=models.CASCADE)
+    state = models.TextField(null=True, choices=ReportResultsStates.choices)
+    completed_at = models.DateTimeField(null=True)
+    result = models.JSONField(default=dict)
 
 
 class ReportDetails(BaseCodecovModel):
@@ -66,7 +78,7 @@ class UploadFlagMembership(models.Model):
 
 class RepositoryFlag(BaseCodecovModel):
     repository = models.ForeignKey(
-        "core.Repository", related_name="flags", on_delete=models.CASCADE,
+        "core.Repository", related_name="flags", on_delete=models.CASCADE
     )
     flag_name = models.CharField(max_length=255)
 
@@ -82,7 +94,7 @@ class ReportSession(BaseCodecovModel):
     name = models.CharField(null=True, max_length=100)
     provider = models.CharField(max_length=50, null=True)
     report = models.ForeignKey(
-        "CommitReport", related_name="sessions", on_delete=models.CASCADE,
+        "CommitReport", related_name="sessions", on_delete=models.CASCADE
     )
     state = models.CharField(max_length=100)
     storage_path = models.TextField()
@@ -112,6 +124,11 @@ class ReportSession(BaseCodecovModel):
 
     @property
     def ci_url(self):
+        if self.build_url:
+            # build_url was saved in the database
+            return self.build_url
+
+        # otherwise we need to construct it ourself (if possible)
         build_url = ci.get(self.provider, {}).get("build_url")
         if not build_url:
             return

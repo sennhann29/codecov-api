@@ -1,17 +1,17 @@
 import json
 
 from django.conf import settings
-from django.test import TestCase
+from django.test import TransactionTestCase
 
 
-class InternalAPITest(TestCase):
+class InternalAPITest(TransactionTestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
         # internal apis are behind a debug flag currently
         # and django/pytest set DEBUG to false by default
         # https://docs.djangoproject.com/en/dev/topics/testing/overview/#other-test-conditions
-        settings.DEBUG = True
+        settings.DEBUG = False
 
     @staticmethod
     def json_content(response):

@@ -1,8 +1,22 @@
 type Mutation {
   createApiToken(input: CreateApiTokenInput!): CreateApiTokenPayload
+  createUserToken(input: CreateUserTokenInput!): CreateUserTokenPayload
+  revokeUserToken(input: RevokeUserTokenInput!): RevokeUserTokenPayload
   setYamlOnOwner(input: SetYamlOnOwnerInput!): SetYamlOnOwnerPayload
   syncWithGitProvider: SyncWithGitProviderPayload
   updateProfile(input: UpdateProfileInput!): UpdateProfilePayload
+  updateDefaultOrganization(
+    input: UpdateDefaultOrganizationInput!
+  ): UpdateDefaultOrganizationPayload
   deleteSession(input: DeleteSessionInput!): DeleteSessionPayload
   onboardUser(input: OnboardUserInput!): OnboardUserPayload
+  regenerateProfilingToken(
+    input: RegenerateProfilingTokenInput!
+  ): RegenerateProfilingTokenPayload
+  activateFlagsMeasurements(
+    input: ActivateFlagsMeasurementsInput!
+  ): ActivateFlagsMeasurementsPayload
+  regenerateOrgUploadToken(
+    input: RegenerateOrgUploadTokenInput!
+  ): RegenerateOrgUploadTokenPayload
 }

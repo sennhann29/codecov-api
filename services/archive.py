@@ -1,13 +1,16 @@
 import logging
 from base64 import b16encode
+from datetime import datetime
 from enum import Enum
 from hashlib import md5
 from uuid import uuid4
 
 from django.conf import settings
 from django.utils import timezone
+from django.utils.functional import cached_property
 from minio import Minio
 from shared.helpers.flag import Flag
+from shared.reports.readonly import ReadOnlyReport as SharedReadOnlyReport
 from shared.reports.resources import Report
 
 from services.storage import StorageService
@@ -22,20 +25,22 @@ class MinioEndpoints(Enum):
     profiling_upload = (
         "{version}/repos/{repo_hash}/profilinguploads/{profiling_version}/{location}"
     )
+    static_analysis_single_file = (
+        "{version}/repos/{repo_hash}/static_analysis/files/{location}"
+    )
 
     def get_path(self, **kwaargs):
         return self.value.format(**kwaargs)
 
 
-class SerializableReport(Report):
+class ReportMixin:
     def file_reports(self):
         for f in self.files:
             yield self.get(f)
 
-    @property
+    @cached_property
     def flags(self):
-        """returns dict(:name=<Flag>)
-        """
+        """returns dict(:name=<Flag>)"""
         flags_dict = {}
         for sid, session in self.sessions.items():
             if session.flags is not None:
@@ -51,6 +56,14 @@ class SerializableReport(Report):
         return flags_dict
 
 
+class SerializableReport(ReportMixin, Report):
+    pass
+
+
+class ReadOnlyReport(ReportMixin, SharedReadOnlyReport):
+    pass
+
+
 def get_minio_client():
     return Minio(
         settings.MINIO_LOCATION,
@@ -60,8 +73,10 @@ def get_minio_client():
     )
 
 
-def build_report(chunks, files, sessions, totals):
-    return SerializableReport(
+def build_report(chunks, files, sessions, totals, report_class=None):
+    if report_class is None:
+        report_class = SerializableReport
+    return report_class.from_chunks(
         chunks=chunks, files=files, sessions=sessions, totals=totals
     )
 
@@ -88,20 +103,15 @@ class ArchiveService(object):
     storage_hash = None
 
     """
-    Boolean. True if enterprise, False if not.
-    """
-    enterprise = False
-
-    """
     Time to life, how long presigned PUTs/GETs should live
     """
     ttl = 10
 
-    def __init__(self, repository):
+    def __init__(self, repository, ttl=None):
         self.root = get_config("services", "minio", "bucket", default="archive")
         self.region = get_config("services", "minio", "region", default="us-east-1")
-        self.enterprise = bool(get_config("setup", "enterprise_license"))
-
+        # Set TTL from config and default to existing value
+        self.ttl = ttl or int(get_config("services", "minio", "ttl", default=self.ttl))
         self.storage = StorageService()
         self.storage_hash = self.get_archive_hash(repository)
 
@@ -118,7 +128,7 @@ class ArchiveService(object):
     """
 
     def is_enterprise(self):
-        return self.enterprise
+        return settings.IS_ENTERPRISE
 
     """
     Generates a hash key from repo specific information.
@@ -266,6 +276,24 @@ class ArchiveService(object):
 
         return self.storage.create_presigned_put(self.root, path, expires)
 
+    def create_raw_upload_presigned_get(
+        self, commit_sha, filename, date_string=None, repo_hash=None, expires=None
+    ):
+        if repo_hash is None:
+            repo_hash = self.storage_hash
+
+        if date_string is None:
+            date_string = datetime.now().strftime("%Y-%m-%d")
+
+        path = "v4/raw/{}/{}/{}/{}".format(
+            date_string, self.storage_hash, commit_sha, filename
+        )
+
+        if expires is None:
+            expires = self.ttl
+
+        return self.storage.create_presigned_get(self.root, path, expires)
+
 
 class ReportService(object):
     """
@@ -275,7 +303,7 @@ class ReportService(object):
         - Fetch a report for a specific commit
     """
 
-    def build_report_from_commit(self, commit):
+    def build_report_from_commit(self, commit, report_class=None):
         """Builds a `shared.reports.resources.Report` from a given commit
 
         Args:
@@ -291,4 +319,4 @@ class ReportService(object):
         files = commit.report["files"]
         sessions = commit.report["sessions"]
         totals = commit.totals
-        return build_report(chunks, files, sessions, totals)
+        return build_report(chunks, files, sessions, totals, report_class=report_class)

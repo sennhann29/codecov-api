@@ -42,7 +42,7 @@ def test_get_bitbucket_redirect(client, settings, mocker):
 
 def test_get_bitbucket_redirect_bitbucket_unavailable(client, settings, mocker):
     mocked_get = mocker.patch.object(
-        Bitbucket, "generate_request_token", side_effect=TorngitServer5xxCodeError(),
+        Bitbucket, "generate_request_token", side_effect=TorngitServer5xxCodeError()
     )
     settings.BITBUCKET_REDIRECT_URI = "http://localhost"
     settings.BITBUCKET_CLIENT_ID = "testqmo19ebdkseoby"
@@ -190,11 +190,12 @@ class TestBitbucketLoginView(TestCase):
                 token = {"key": "aaaa", "secret": "bbbb"}
                 res = view.fetch_user_data(token)
                 assert res == {
-                    "has_private_access": False,
+                    "has_private_access": True,
                     "is_student": False,
                     "orgs": [],
                     "user": {
-                        "access_token": "aaaa:bbbb",
+                        "key": "aaaa",
+                        "secret": "bbbb",
                         "id": "9a01f37b-b1b2-40c5-8c5e-1a39f4b5e645",
                         "login": "ThiagoCodecov",
                     },

@@ -13,7 +13,32 @@ type Commit {
   flagNames: [String]
   coverageFile(path: String!, flags: [String]): File
   compareWithParent: Comparison
-  uploads(first: Int, after: String, last: Int, before: String): UploadConnection
+  uploads(
+    first: Int
+    after: String
+    last: Int
+    before: String
+  ): UploadConnection
+  criticalFiles: [CriticalFile!]!
+  pathContents(path: String, filters: PathContentsFilters): PathContentsResult
+  errors(errorType: CommitErrorType!): CommitErrorsConnection!
+  totalUploads: Int!
+  components: [Component!]!
+}
+
+type CommitErrorsConnection {
+  edges: [CommitErrorEdge]
+  totalCount: Int!
+  pageInfo: PageInfo!
+}
+
+type CommitErrorEdge {
+  cursor: String!
+  node: CommitError!
+}
+
+type CommitError {
+  errorCode: CommitErrorCode!
 }
 
 type UploadConnection {
@@ -26,3 +51,4 @@ type UploadEdge {
   cursor: String!
   node: Upload!
 }
+

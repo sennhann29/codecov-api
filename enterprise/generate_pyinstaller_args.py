@@ -65,6 +65,7 @@ def main():
         "reports.migrations",
         "codecov_auth.migrations",
         "compare.migrations",
+        "timeseries.migrations",
         "corsheaders",
         "corsheaders.apps",
         "corsheaders.middleware",
@@ -96,6 +97,25 @@ def main():
         "gunicorn.workers.sync",
         "gunicorn.instrument",
         "gunicorn.instrument.statsd",
+        "drf_spectacular",
+        "drf_spectacular.generators",
+        "drf_spectacular.contrib.django_oauth_toolkit",
+        "drf_spectacular.contrib.djangorestframework_camel_case",
+        "drf_spectacular.contrib.rest_auth",
+        "drf_spectacular.contrib.rest_framework",
+        "drf_spectacular.contrib.rest_polymorphic",
+        "drf_spectacular.contrib.rest_framework_dataclasses",
+        "drf_spectacular.contrib.rest_framework_jwt",
+        "drf_spectacular.contrib.rest_framework_simplejwt",
+        "drf_spectacular.contrib.django_filters",
+        "drf_spectacular.contrib.rest_framework_recursive",
+        "drf_spectacular.contrib.rest_framework_gis",
+        # Imports for bitbucket_server
+        "asyncore",
+        "imaplib",
+        "poplib",
+        "smtplib",
+        "xmlrpc.server",
     }
 
     base = celery.__file__.rsplit("/", 1)[0]

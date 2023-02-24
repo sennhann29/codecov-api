@@ -1,19 +1,23 @@
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 import pytest
 import rest_framework
-from django.test import TestCase
+from django.conf import settings
+from django.test import TestCase, override_settings
 from django.urls import ResolverMatch
 from rest_framework.exceptions import AuthenticationFailed, PermissionDenied
 from rest_framework.request import Request
-from rest_framework.reverse import reverse
 from rest_framework.test import APIRequestFactory
 
 from codecov_auth.authentication import (
     CodecovSessionAuthentication,
     CodecovTokenAuthentication,
+    SuperTokenAuthentication,
+    UserTokenAuthentication,
 )
-from codecov_auth.tests.factories import OwnerFactory, SessionFactory
+from codecov_auth.authentication.types import SuperToken, SuperUser
+from codecov_auth.tests.factories import OwnerFactory, SessionFactory, UserTokenFactory
 from utils.test_utils import BaseTestCase
 
 # Using the standard RequestFactory API to create a form POST request
@@ -219,3 +223,99 @@ class CodecovSessionAuthenticationTests(TestCase):
         user, token = result
         assert user == session.owner
         assert token == session
+
+
+class UserTokenAuthenticationTests(TestCase):
+    def test_bearer_token_auth(self):
+        user_token = UserTokenFactory()
+
+        request_factory = APIRequestFactory()
+        request = request_factory.get(
+            "", HTTP_AUTHORIZATION=f"Bearer {user_token.token}"
+        )
+
+        authenticator = UserTokenAuthentication()
+        result = authenticator.authenticate(request)
+        assert result == (user_token.owner, user_token)
+
+    def test_bearer_token_auth_invalid_token(self):
+        request_factory = APIRequestFactory()
+        request = request_factory.get(
+            "", HTTP_AUTHORIZATION=f"Bearer 8f9bc6cb-fd14-43bc-bbb5-be1e7c948f34"
+        )
+
+        authenticator = UserTokenAuthentication()
+        with pytest.raises(AuthenticationFailed):
+            authenticator.authenticate(request)
+
+    def test_bearer_token_auth_expired_token(self):
+        user_token = UserTokenFactory(valid_until=datetime.now() - timedelta(seconds=1))
+
+        request_factory = APIRequestFactory()
+        request = request_factory.get(
+            "", HTTP_AUTHORIZATION=f"Bearer {user_token.token}"
+        )
+
+        authenticator = UserTokenAuthentication()
+        with pytest.raises(AuthenticationFailed):
+            authenticator.authenticate(request)
+
+    def test_bearer_token_auth_malformed_header(self):
+        request_factory = APIRequestFactory()
+        request = request_factory.get("", HTTP_AUTHORIZATION="wrong")
+
+        authenticator = UserTokenAuthentication()
+        result = authenticator.authenticate(request)
+        assert result is None
+
+    def test_bearer_token_auth_no_authorization_header(self):
+        request_factory = APIRequestFactory()
+        request = request_factory.get("")
+
+        authenticator = UserTokenAuthentication()
+        result = authenticator.authenticate(request)
+        assert result is None
+
+
+class SuperTokenAuthenticationTests(TestCase):
+    @override_settings(SUPER_API_TOKEN="17603a9e-0463-45e1-883e-d649fccf4ae8")
+    def test_bearer_token_auth_if_token_is_super_token(self):
+        super_token = "17603a9e-0463-45e1-883e-d649fccf4ae8"
+
+        request_factory = APIRequestFactory()
+        request = request_factory.get("", HTTP_AUTHORIZATION=f"Bearer {super_token}")
+
+        authenticator = SuperTokenAuthentication()
+        result = authenticator.authenticate(request)
+        assert isinstance(result[0], SuperUser)
+        assert isinstance(result[1], SuperToken)
+        assert result[1].token == super_token
+
+    @override_settings(SUPER_API_TOKEN="17603a9e-0463-45e1-883e-d649fccf4ae8")
+    def test_bearer_token_auth_invalid_super_token(self):
+        super_token = "0ae68e58-79f8-4341-9531-55aada05a251"
+        request_factory = APIRequestFactory()
+        request = request_factory.get("", HTTP_AUTHORIZATION=f"Bearer {super_token}")
+
+        authenticator = SuperTokenAuthentication()
+        result = authenticator.authenticate(request)
+        assert result == None
+
+    def test_bearer_token_default_token_envar(self):
+        super_token = "0ae68e58-79f8-4341-9531-55aada05a251"
+        request_factory = APIRequestFactory()
+        request = request_factory.get("", HTTP_AUTHORIZATION=f"Bearer {super_token}")
+        authenticator = SuperTokenAuthentication()
+        result = authenticator.authenticate(request)
+        assert result == None
+
+    def test_bearer_token_default_token_envar_and_same_string_as_header(self):
+        super_token = settings.SUPER_API_TOKEN
+        request_factory = APIRequestFactory()
+        request = request_factory.get("", HTTP_AUTHORIZATION=f"Bearer {super_token}")
+        authenticator = SuperTokenAuthentication()
+        with pytest.raises(
+            AuthenticationFailed,
+            match="Invalid token header. Token string should not contain spaces.",
+        ):
+            authenticator.authenticate(request)

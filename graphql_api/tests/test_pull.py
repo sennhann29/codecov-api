@@ -1,9 +1,11 @@
+from datetime import datetime, timedelta
+
 from django.test import TransactionTestCase
 from freezegun import freeze_time
 
 from codecov_auth.tests.factories import OwnerFactory
 from compare.tests.factories import CommitComparisonFactory
-from core.models import Pull
+from core.models import Commit
 from core.tests.factories import CommitFactory, PullFactory, RepositoryFactory
 from reports.tests.factories import CommitReportFactory, ReportLevelTotalsFactory
 
@@ -28,32 +30,39 @@ query_list_pull_request = """{
 }
 """
 
+default_pull_request_detail_query = """
+    title
+    state
+    pullId
+    updatestamp
+    author {
+        username
+    }
+    head {
+        totals {
+            coverage
+        }
+    }
+    comparedTo {
+        commitid
+    }
+    compareWithBase {
+        __typename
+        ... on Comparison {
+            patchTotals {
+                coverage
+            }
+        }
+    }
+"""
+
 query_pull_request_detail = """{
     me {
         owner {
             repository(name: "test-repo-for-pull") {
                 name
                 pull(id: %s) {
-                    title
-                    state
-                    pullId
-                    updatestamp
-                    author {
-                        username
-                    }
-                    head {
-                        totals {
-                            coverage
-                        }
-                    }
-                    comparedTo {
-                        commitid
-                    }
-                    compareWithBase {
-                        patchTotals {
-                            coverage
-                        }
-                    }
+                    %s
                 }
             }
         }
@@ -67,8 +76,8 @@ class TestPullRequestList(GraphQLTestHelper, TransactionTestCase):
         data = self.gql_request(query_list_pull_request, user=self.user)
         return paginate_connection(data["me"]["owner"]["repository"]["pulls"])
 
-    def fetch_one_pull_request(self, id):
-        data = self.gql_request(query_pull_request_detail % id, user=self.user)
+    def fetch_one_pull_request(self, id, query=default_pull_request_detail_query):
+        data = self.gql_request(query_pull_request_detail % (id, query), user=self.user)
         return data["me"]["owner"]["repository"]["pull"]
 
     def setUp(self):
@@ -107,7 +116,9 @@ class TestPullRequestList(GraphQLTestHelper, TransactionTestCase):
             "author": {"username": "test-pull-user"},
             "head": {"totals": None},
             "comparedTo": None,
-            "compareWithBase": None,
+            "compareWithBase": {
+                "__typename": "MissingBaseCommit",
+            },
         }
 
     @freeze_time("2021-02-02")
@@ -128,7 +139,9 @@ class TestPullRequestList(GraphQLTestHelper, TransactionTestCase):
             "author": None,
             "head": None,
             "comparedTo": None,
-            "compareWithBase": None,
+            "compareWithBase": {
+                "__typename": "MissingBaseCommit",
+            },
         }
 
     @freeze_time("2021-02-02")
@@ -148,7 +161,35 @@ class TestPullRequestList(GraphQLTestHelper, TransactionTestCase):
             "author": {"username": "test-pull-user"},
             "head": None,
             "comparedTo": None,
-            "compareWithBase": None,
+            "compareWithBase": {
+                "__typename": "MissingHeadCommit",
+            },
+        }
+
+    @freeze_time("2021-02-02")
+    def test_when_repository_has_missing_head_commit(self):
+        pull = PullFactory(
+            repository=self.repository,
+            title="test-missing-head-commit",
+            author=self.user,
+        )
+        Commit.objects.filter(
+            repository_id=self.repository.pk,
+            commitid=pull.head,
+        ).delete()
+
+        res = self.fetch_one_pull_request(pull.pullid)
+        assert res == {
+            "title": "test-missing-head-commit",
+            "state": "OPEN",
+            "pullId": pull.pullid,
+            "updatestamp": "2021-02-02T00:00:00",
+            "author": {"username": "test-pull-user"},
+            "head": None,
+            "comparedTo": None,
+            "compareWithBase": {
+                "__typename": "MissingComparison",
+            },
         }
 
     @freeze_time("2021-02-02")
@@ -169,7 +210,7 @@ class TestPullRequestList(GraphQLTestHelper, TransactionTestCase):
         CommitComparisonFactory(
             base_commit=compared_to,
             compare_commit=head,
-            patch_totals={"coverage": 87.39},
+            patch_totals={"coverage": 0.8739},
         )
         my_pull = PullFactory(
             repository=self.repository,
@@ -187,5 +228,101 @@ class TestPullRequestList(GraphQLTestHelper, TransactionTestCase):
             "author": {"username": "test-pull-user"},
             "head": {"totals": {"coverage": 78.38}},
             "comparedTo": {"commitid": "9asd78fa7as8d8fa97s8d7fgagsd8fa9asd8f77s"},
-            "compareWithBase": {"patchTotals": {"coverage": 87.39}},
+            "compareWithBase": {
+                "__typename": "Comparison",
+                "patchTotals": {"coverage": 87.39},
+            },
+        }
+
+    @freeze_time("2021-02-02")
+    def test_pull_no_patch_totals(self):
+        head = CommitFactory(
+            repository=self.repository,
+            author=self.user,
+            commitid="5672734ij1n234918231290j12nasdfioasud0f9",
+            totals=None,
+        )
+        report = CommitReportFactory(commit=head)
+        ReportLevelTotalsFactory(report=report, coverage=78.38)
+        compared_to = CommitFactory(
+            repository=self.repository,
+            author=self.user,
+            commitid="9asd78fa7as8d8fa97s8d7fgagsd8fa9asd8f77s",
+        )
+        CommitComparisonFactory(
+            base_commit=compared_to, compare_commit=head, patch_totals=None
+        )
+        my_pull = PullFactory(
+            repository=self.repository,
+            title="test-pull-request",
+            author=self.user,
+            head=head.commitid,
+            compared_to=compared_to.commitid,
+        )
+        pull = self.fetch_one_pull_request(my_pull.pullid)
+        assert pull == {
+            "title": "test-pull-request",
+            "state": "OPEN",
+            "pullId": my_pull.pullid,
+            "updatestamp": "2021-02-02T00:00:00",
+            "author": {"username": "test-pull-user"},
+            "head": {"totals": {"coverage": 78.38}},
+            "comparedTo": {"commitid": "9asd78fa7as8d8fa97s8d7fgagsd8fa9asd8f77s"},
+            "compareWithBase": {
+                "__typename": "Comparison",
+                "patchTotals": None,
+            },
+        }
+
+    @freeze_time("2021-02-02")
+    def test_fetch_commits_request(self):
+        query = """
+            commits {
+                totalCount
+                edges {
+                    node {
+                        commitid
+                    }
+                }
+            }
+        """
+        my_pull = PullFactory(repository=self.repository)
+
+        CommitFactory(
+            repository=self.repository,
+            pullid=my_pull.pullid,
+            commitid="11111",
+            timestamp=datetime.today() - timedelta(days=1),
+        )
+        CommitFactory(
+            repository=self.repository,
+            pullid=my_pull.pullid,
+            commitid="22222",
+            timestamp=datetime.today() - timedelta(days=2),
+        )
+        CommitFactory(
+            repository=self.repository,
+            pullid=my_pull.pullid,
+            commitid="33333",
+            timestamp=datetime.today() - timedelta(days=3),
+        )
+        CommitFactory(
+            repository=self.repository,
+            pullid=my_pull.pullid,
+            commitid="44444",
+            timestamp=datetime.today() - timedelta(days=3),
+            deleted=True,
+        )
+
+        pull = self.fetch_one_pull_request(my_pull.pullid, query)
+
+        assert pull == {
+            "commits": {
+                "edges": [
+                    {"node": {"commitid": "11111"}},
+                    {"node": {"commitid": "22222"}},
+                    {"node": {"commitid": "33333"}},
+                ],
+                "totalCount": 3,
+            }
         }
