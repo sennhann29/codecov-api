@@ -27,11 +27,12 @@ class DateTimeWithoutTZField(models.DateTimeField):
         return "timestamp"
 
 
-class Version(models.Model):
-    version = models.TextField(primary_key=True)
+class Constants(models.Model):
+    key = models.CharField(primary_key=True)
+    value = models.CharField()
 
     class Meta:
-        db_table = "version"
+        db_table = "constants"
 
 
 def _gen_image_token():
