@@ -94,7 +94,7 @@ deprecated==1.2.12
     # via opentelemetry-api
 distlib==0.3.1
     # via virtualenv
-django==4.2.2
+django==4.2.3
     # via
     #   -r requirements.in
     #   ariadne-django
@@ -374,7 +374,6 @@ typing-extensions==4.6.2
     # via
     #   ariadne
     #   shared
-    #   starlette
 uritemplate==4.1.1
     # via drf-spectacular
 urllib3==1.26.13
