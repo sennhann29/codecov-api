@@ -1,4 +1,9 @@
+import traceback
+
 import requests
+from django.contrib.admin.models import ADDITION, CHANGE, DELETION, LogEntry
+from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
 
 from codecov_auth.constants import GITLAB_BASE_URL
 
@@ -28,3 +33,39 @@ def current_user_part_of_org(owner, org):
     # owner is a direct member of the org
     orgs_of_user = owner.organizations or []
     return org.ownerid in orgs_of_user
+
+
+# https://stackoverflow.com/questions/7905106/adding-a-log-entry-for-an-action-by-a-user-in-a-django-ap
+add = ADDITION
+change = CHANGE
+delete = DELETION
+
+
+class History:
+    @staticmethod
+    def log(objects, message, action_flag=None, user=None, add_traceback=False):
+        User = get_user_model()
+        if user is None:
+            user = User.objects.get()
+
+        if action_flag is None:
+            action_flag = change
+
+        if type(objects) is not list:
+            objects = [objects]
+
+        if add_traceback:
+            message = f"{message}: {traceback.format_stack()}"
+
+        for o in objects:
+            if not o:
+                continue
+
+            LogEntry.objects.log_action(
+                user_id=user.pk,
+                content_type_id=ContentType.objects.get_for_model(o).pk,
+                object_repr=str(o),
+                object_id=o.ownerid,
+                change_message=message,
+                action_flag=action_flag,
+            )

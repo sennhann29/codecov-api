@@ -78,6 +78,12 @@ class User(BaseCodecovModel):
     class Meta:
         db_table = "users"
 
+    def __str__(self) -> str:
+        os = Owner.objects.filter(user_id=self.id)
+        if os.first() is None:
+            return ""
+        return f"{str(os.first())}"
+
     @property
     def is_active(self):
         # Required to implement django's user-model interface
