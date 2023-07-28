@@ -118,5 +118,5 @@ class ImpersonationMiddleware(MiddlewareMixin):
             History.log(
                 Owner.objects.get(ownerid=impersonating_ownerid),
                 "Impersonation successful",
-                user=current_user,
+                current_user,
             )

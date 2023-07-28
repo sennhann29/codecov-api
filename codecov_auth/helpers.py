@@ -1,4 +1,4 @@
-import traceback
+from traceback import format_stack
 
 import requests
 from django.contrib.admin.models import ADDITION, CHANGE, DELETION, LogEntry
@@ -43,11 +43,7 @@ delete = DELETION
 
 class History:
     @staticmethod
-    def log(objects, message, action_flag=None, user=None, add_traceback=False):
-        User = get_user_model()
-        if user is None:
-            user = User.objects.get()
-
+    def log(objects, message, user, action_flag=None, add_traceback=False):
         if action_flag is None:
             action_flag = change
 
@@ -55,7 +51,7 @@ class History:
             objects = [objects]
 
         if add_traceback:
-            message = f"{message}: {traceback.format_stack()}"
+            message = f"{message}: {format_stack()}"
 
         for o in objects:
             if not o:
