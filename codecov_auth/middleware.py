@@ -6,7 +6,6 @@ from django.urls import resolve
 from django.utils.deprecation import MiddlewareMixin
 from rest_framework import exceptions
 
-from codecov_auth.helpers import History
 from codecov_auth.models import Owner, Service
 from utils.services import get_long_service_name
 
@@ -114,9 +113,4 @@ class ImpersonationMiddleware(MiddlewareMixin):
                     current_user_id=current_user.pk,
                     impersonating_ownerid=impersonating_ownerid,
                 ),
-            )
-            History.log(
-                Owner.objects.get(ownerid=impersonating_ownerid),
-                "Impersonation successful",
-                current_user,
             )
