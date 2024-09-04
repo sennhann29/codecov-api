@@ -86,7 +86,7 @@ coverage==6.0.1
     # via
     #   codecovopentelem
     #   pytest-cov
-cryptography==40.0.2
+cryptography==43.0.1
     # via shared
 ddtrace==0.46
     # via -r requirements.in
@@ -94,7 +94,7 @@ deprecated==1.2.12
     # via opentelemetry-api
 distlib==0.3.1
     # via virtualenv
-django==4.2.2
+django==4.2.16
     # via
     #   -r requirements.in
     #   ariadne-django
