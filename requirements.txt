@@ -351,7 +351,7 @@ sortedcontainers==2.4.0
     #   intervaltree
 sqlparse==0.4.2
     # via django
-starlette==0.27.0
+starlette==0.40.0
     # via ariadne
 statsd==3.3.0
     # via shared
