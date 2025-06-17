@@ -307,7 +307,7 @@ redis==4.4.3
     #   fakeredis
     #   python-redis-lock
     #   shared
-requests==2.28.0
+requests==2.32.4
     # via
     #   -r requirements.in
     #   analytics-python
