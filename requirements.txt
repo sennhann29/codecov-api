@@ -238,7 +238,7 @@ pre-commit==2.11.1
     # via -r requirements.in
 prompt-toolkit==3.0.28
     # via click-repl
-protobuf==3.20.3
+protobuf==4.25.8
     # via
     #   ddtrace
     #   google-api-core
@@ -376,7 +376,7 @@ typing-extensions==4.6.2
     #   shared
 uritemplate==4.1.1
     # via drf-spectacular
-urllib3==1.26.13
+urllib3==2.5.0
     # via
     #   botocore
     #   elastic-apm
