@@ -94,7 +94,7 @@ deprecated==1.2.12
     # via opentelemetry-api
 distlib==0.3.1
     # via virtualenv
-django==4.2.2
+django==4.2.27
     # via
     #   -r requirements.in
     #   ariadne-django
@@ -349,7 +349,7 @@ sortedcontainers==2.4.0
     # via
     #   fakeredis
     #   intervaltree
-sqlparse==0.4.2
+sqlparse==0.5.4
     # via django
 starlette==0.27.0
     # via ariadne
@@ -376,7 +376,7 @@ typing-extensions==4.6.2
     #   shared
 uritemplate==4.1.1
     # via drf-spectacular
-urllib3==1.26.13
+urllib3==2.6.0
     # via
     #   botocore
     #   elastic-apm
